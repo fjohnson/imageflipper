@@ -2,10 +2,10 @@
 Handles downloading, converting, and displaying images.
 Images are chosen based on fixed search terms'''
 
-import pygame, os, tempfile, urllib2, json, random, datetime, sys, random
-import threading, shutil
+import pygame, os, tempfile, urllib2, json, sys, random
+import threading, shutil, time, datetime
 from GIFImage import GIFImage
-from pygame import display, image, event, time, Rect
+from pygame import display, image, event, Rect
 from PIL import Image
 
 pygame.font.init()
@@ -22,10 +22,9 @@ IMAGE_SIZE = (SCREEN_WIDTH, SCREEN_HEIGHT)
 FONT_SIZE = 48
 FONT_COLOR = (255,255,0)
 LOADING_FONT = pygame.font.Font(None, FONT_SIZE)
-LOADING_FINISHED = False
-loading_thread = None
-SHOW_PROGRESS = False
-LOADING_GIF = None
+LOADING_FONT_DETAILED = pygame.font.Font(None, FONT_SIZE / 2)
+DETAILED_PROGRESS = True
+TEXT_PADDING = 5 #px of padding for text
 
 RGB_BLACK = (0,0,0)
 MOUSE_LEFT = 1
@@ -33,8 +32,14 @@ MOUSE_RIGHT = 3
 
 CHUNK_SIZE = 8192
 GOOGLE_AJAX_URL = "http://ajax.googleapis.com/ajax/services/search/images?v=1.0&q={}&start={}"
-MAX_RESULTS = 2
-SEARCH_TERMS = ['parot', 'dbz', 'ipa']
+MAX_RESULTS = 5
+SEARCH_TERMS = ['vegans']
+
+IMAGES = []
+IMAGES_EVENT = threading.Event()
+IMAGES_EVENT.clear()
+IMAGES_DOWNLOAD_INTERVAL = 5 #60 * 60 * 24 #every 24 hrs scan for new images
+IMAGE_FLIP_FREQUENCY = 1
 
 def assemble_images():
     images = []
@@ -93,22 +98,6 @@ def resize_image(pil_image):
     #Or we return an aspect ratio preserved enlarged image to screen size
     return pil_image.resize((new_width, new_height))
 
-def display_loading():
-    global LOADING_GIF
-
-    gifs = os.listdir(LOAD_IMAGE_DIR)
-    LOADING_GIF = GIFImage(os.path.join(LOAD_IMAGE_DIR, random.choice(gifs)))
-
-    x_coord = get_center_width_offset(LOADING_GIF.image)
-    y_coord = get_center_height_offset(LOADING_GIF.image)
-    while True:
-        LOADING_GIF.render(screen, (x_coord,y_coord))
-        display.flip()
-        if LOADING_FINISHED:
-            LOADING_GIF.close()
-            return
-
-
 def display_image(image_path):
     pil_image = pil_image_convert(image_path)
 
@@ -146,55 +135,63 @@ def search_for_images(search_term):
         data = json.loads(urllib2.urlopen(url).read())
         urls.extend(parse_urls(data))
 
-    return urls
+    return set(urls)
 
 def display_loading_progress(search_term, term_url_count, total_urls, urls_processed, term_count):
+
     percent_complete = (urls_processed/float(total_urls)) * 100
     percent_complete = int(percent_complete)
     msg = "{}%".format(percent_complete)
 
+    loading_font_size = LOADING_FONT.get_ascent()
     text = LOADING_FONT.render(msg, 1, (random.randint(0,255), random.randint(0,255), random.randint(0,255)))
-    #x_coord = get_center_width_offset(LOADING_GIF.image) + LOADING_GIF.image.size[0]/2 + ((len(msg) * FONT_SIZE) / 2)
-    #y_coord = get_center_height_offset(LOADING_GIF.image) + LOADING_GIF.image.size[1] + FONT_SIZE
-    x_coord = SCREEN_WIDTH - len(msg) * LOADING_FONT.get_ascent()
+    x_coord = SCREEN_WIDTH - len(msg) * loading_font_size
     y_coord = 0
 
-    screen.fill(RGB_BLACK, Rect(x_coord, y_coord, len(msg) * FONT_SIZE, FONT_SIZE))
+    screen.fill(RGB_BLACK, Rect(x_coord, y_coord, len(msg) * loading_font_size, loading_font_size + TEXT_PADDING))
     screen.blit(text, (x_coord, y_coord))
 
-    if not SHOW_PROGRESS:
+    if not DETAILED_PROGRESS:
         display.flip()
         return
 
-    screen.fill(RGB_BLACK, Rect(0, SCREEN_HEIGHT - FONT_SIZE, SCREEN_WIDTH, FONT_SIZE))
+    progress_font_size = LOADING_FONT_DETAILED.get_ascent()
+    y_coord = SCREEN_HEIGHT - progress_font_size - TEXT_PADDING
+    screen.fill(RGB_BLACK, Rect(0, y_coord, SCREEN_WIDTH, progress_font_size + TEXT_PADDING))
 
     msg = 'Total: {}/{} urls Search Term:"{}":{}/{} urls'.format(urls_processed, total_urls, search_term, term_count, term_url_count)
-    text = LOADING_FONT.render(msg, 1, FONT_COLOR)
-    screen.blit(text, (0, SCREEN_HEIGHT - FONT_SIZE))
+    text = LOADING_FONT_DETAILED.render(msg, 1, FONT_COLOR)
+    screen.blit(text, (0, y_coord))
     display.flip()
 
 def display_file_download_progress(content_length, bytes_read, url, percent_complete):
-    if not SHOW_PROGRESS:
+    if not DETAILED_PROGRESS:
         return
 
-    screen.fill(RGB_BLACK, Rect(0, SCREEN_HEIGHT - FONT_SIZE*3, SCREEN_WIDTH, FONT_SIZE))
-    text = LOADING_FONT.render(url, 1, FONT_COLOR)
-    screen.blit(text, (0, SCREEN_HEIGHT - FONT_SIZE*3))
+    progress_font_size = LOADING_FONT_DETAILED.get_ascent()
+    y_coord_url = SCREEN_HEIGHT - progress_font_size*3 - TEXT_PADDING*3
+    y_coord_dl = SCREEN_HEIGHT - progress_font_size*2 - TEXT_PADDING*2
+    screen.fill(RGB_BLACK, Rect(0, y_coord_url, SCREEN_WIDTH, progress_font_size + TEXT_PADDING))
+    screen.fill(RGB_BLACK, Rect(0, y_coord_dl, SCREEN_WIDTH, progress_font_size + TEXT_PADDING))
+
+    text = LOADING_FONT_DETAILED.render(url, 1, FONT_COLOR)
+    screen.blit(text, (0, y_coord_url))
 
     msg = "Download progress {}B/{}B".format(bytes_read, content_length)
     msg = msg + " {0:.2f}%".format(percent_complete)
-    screen.fill(RGB_BLACK, Rect(0, SCREEN_HEIGHT - FONT_SIZE*2, SCREEN_WIDTH, FONT_SIZE))
-    text = LOADING_FONT.render(msg, 1, FONT_COLOR)
-    screen.blit(text, (0, SCREEN_HEIGHT - FONT_SIZE*2))
+    text = LOADING_FONT_DETAILED.render(msg, 1, FONT_COLOR)
+    screen.blit(text, (0, y_coord_dl))
 
     display.flip()
 
 def clear_progress():
-    screen.fill(RGB_BLACK, Rect(0, SCREEN_HEIGHT - FONT_SIZE*3, SCREEN_WIDTH, FONT_SIZE*3))
+    font_size = LOADING_FONT_DETAILED.get_ascent()
+    y_coord = SCREEN_HEIGHT - font_size*3 - TEXT_PADDING*3
+    height = SCREEN_HEIGHT - y_coord
+    screen.fill(RGB_BLACK, Rect(0, y_coord, SCREEN_WIDTH, height))
     display.flip()
 
 def download_file(response, img, url):
-    global SHOW_PROGRESS
 
     content_length = int(response.info().getheader('Content-Length').strip())
     bytes_read = 0
@@ -214,14 +211,6 @@ def download_file(response, img, url):
         if percent_complete - last_percent_complete > 1:
             display_file_download_progress(content_length, bytes_read, url, percent_complete)
 
-        ev = event.poll()
-        if ev and ev.type == pygame.KEYDOWN and ev.key == pygame.K_SPACE:
-            end()
-            sys.exit(1)
-        elif ev and ev.type == pygame.KEYDOWN and ev.key == pygame.K_DELETE:
-            SHOW_PROGRESS = not SHOW_PROGRESS
-            clear_progress()
-
 def download_images(term_dict, total_urls):
 
     urls_processed = 0
@@ -234,9 +223,16 @@ def download_images(term_dict, total_urls):
         for i,url in enumerate(term_dict[search_term]):
             filename = os.path.join(search_images_dir, url.rsplit('/')[-1])
             if not os.path.exists(filename):
+                error = False
                 with open(filename, 'w') as img:
-                    response = urllib2.urlopen(url)
-                    download_file(response, img, url)
+                    try:
+                        response = urllib2.urlopen(url)
+                        download_file(response, img, url)
+                    except urllib2.HTTPError:
+                        error = True
+                if error and os.path.exists(filename):
+                    os.unlink(filename)
+                    print "Failed to download {}".format(url)
             display_loading_progress(search_term, url_count, total_urls, urls_processed, i+1)
             urls_processed += 1
 
@@ -248,40 +244,110 @@ def search_term_download():
         term_dict[term] = search_for_images(term)
         total_urls += len(term_dict[term])
 
+    import pprint
+    pprint.pprint(term_dict)
     download_images(term_dict, total_urls)
 
-    global LOADING_FINISHED
-    LOADING_FINISHED = True
-    loading_thread.join()
+
+class ImageDownloader(threading.Thread):
+    def __init__(self):
+        super(self.__class__, self).__init__()
+        self.daemon = True
+
+    def run(self):
+        global IMAGES
+
+        while True:
+            IMAGES_EVENT.set()
+
+            search_term_download()
+            IMAGES = assemble_images()
+
+            IMAGES_EVENT.clear()
+
+            time.sleep(IMAGES_DOWNLOAD_INTERVAL)
+
+
+def check_for_exit(wait=False):
+    global DETAILED_PROGRESS
+
+    if wait:
+        ev = event.wait()
+    else:
+        ev = event.poll()
+
+    if ev and ev.type == pygame.KEYDOWN and ev.key == pygame.K_SPACE:
+        end()
+        sys.exit(0)
+    elif ev and ev.type == pygame.KEYDOWN and ev.key == pygame.K_DELETE:
+        DETAILED_PROGRESS = not DETAILED_PROGRESS
+        clear_progress()
+
+def display_loading():
+        gifs = os.listdir(LOAD_IMAGE_DIR)
+        loading_gif = GIFImage(os.path.join(LOAD_IMAGE_DIR, random.choice(gifs)))
+
+        x_coord = get_center_width_offset(loading_gif.image)
+        y_coord = get_center_height_offset(loading_gif.image)
+
+        screen.fill(RGB_BLACK)
+        display.flip()
+        while True:
+            loading_gif.render(screen, (x_coord,y_coord))
+            display.flip()
+
+            if not IMAGES_EVENT.isSet():
+                return
+
+            check_for_exit()
+
+def idle():
+    start = datetime.datetime.now()
+    next_tick = datetime.datetime.now()
+    input_scan_rate = .1 # sec
+
+    while (next_tick - start).seconds < IMAGE_FLIP_FREQUENCY:
+        check_for_exit()
+        time.sleep(input_scan_rate)
+        next_tick = datetime.datetime.now()
 
 def run():
-
-    global loading_thread
-    loading_thread = threading.Thread(target=display_loading)
-    loading_thread.daemon = True
-    loading_thread.start()
 
     if not os.path.exists(IMAGE_DIR):
         os.mkdir(IMAGE_DIR)
 
-    search_term_download()
-    images = assemble_images()
+    ImageDownloader().start()
+
+    #wait for the downloader to start
+    IMAGES_EVENT.wait()
+    display_loading()
+
     image_index = 0
+    images = IMAGES
     display_image(images[image_index])
 
-    i = 0
     while True:
-        ev = event.poll()
-        if ev and ev.type == pygame.KEYDOWN and ev.key == pygame.K_SPACE:
-            return
-        elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == MOUSE_LEFT:
-            if image_index != len(images) - 1:
-                image_index += 1
-            display_image(images[image_index])
-        elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == MOUSE_RIGHT:
-            if image_index != 0:
-                image_index -= 1
-            display_image(images[image_index])
+        if not IMAGES_EVENT.isSet():
+            images = list(IMAGES)
+
+        for image in images:
+            try:
+                display_image(image)
+            except IOError:
+                continue
+            idle()
+
+        # ev = event.wait()
+        # if ev and ev.type == pygame.KEYDOWN and ev.key == pygame.K_SPACE:
+        #     return
+        # elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == MOUSE_LEFT:
+        #     if image_index != len(images) - 1:
+        #         image_index += 1
+        #     display_image(images[image_index])
+        # elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == MOUSE_RIGHT:
+        #     if image_index != 0:
+        #         image_index -= 1
+        #     display_image(images[image_index])
 
 def end():
     for conv_file in CONVERT_CACHE.values():
@@ -297,6 +363,5 @@ def debug():
 
 #This is a surface that can be drawn to like a regular Surface but changes will eventually be seen on the monitor.
 screen = display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))#, pygame.FULLSCREEN)
-#debug()
 run()
 end()
