@@ -43,7 +43,7 @@ with open("apikey") as apikey_file:
 IMAGES = set()
 IMAGES_EVENT = threading.Event()
 IMAGES_EVENT.clear()
-IMAGES_DOWNLOAD_INTERVAL = 20 #60 * 60 * 24 #every 24 hrs scan for new images
+IMAGES_DOWNLOAD_INTERVAL = 60 * 5 #60 * 60 * 24 #every 24 hrs scan for new images
 IMAGE_FLIP_FREQUENCY = 5
 IMAGE_SIZES = [
     'xlarge',
@@ -53,6 +53,9 @@ IMAGE_SIZES = [
 IMAGE_BLACKLIST_FILENAME = "urlblacklist"
 IMAGE_URL_ERRORS = {}
 IMAGE_URL_RETRY = 3
+
+MAX_FILE_AGE = 60 * 60 * 24 * 90 # 90 days
+IMAGE_CLEAN_INTERVAL = 60*60*24
 
 try:
     with open(IMAGE_BLACKLIST_FILENAME) as blacklist:
@@ -368,6 +371,38 @@ def idle():
         time.sleep(input_scan_rate)
         next_tick = datetime.datetime.now()
 
+class ImageCleaner(threading.Thread):
+
+    def __init__(self, daemon=True):
+        super(self.__class__, self).__init__()
+        self.daemon = True
+
+    def run(self):
+        global IMAGES
+
+        while True:
+            IMAGES_EVENT.set()
+            erased_images = set()
+
+            for image in IMAGES:
+                age_seconds = os.stat(image).st_mtime
+                time_now = time.time()
+                if time_now - age_seconds > MAX_FILE_AGE:
+                    os.unlink(image)
+                    erased_images.add(image)
+
+            if erased_images:
+                print "Erased images :{}".format(erased_images)
+
+            IMAGES = IMAGES - erased_images
+            IMAGES_EVENT.clear()
+            time.sleep(IMAGE_CLEAN_INTERVAL)
+
+
+def update_image_cache(images):
+    global CONVERT_CACHE
+    CONVERT_CACHE = {k:CONVERT_CACHE[k] for k in set(CONVERT_CACHE.keys()) - images}
+
 def run():
     global SEARCH_TERMS
     global IMAGES
@@ -375,22 +410,26 @@ def run():
     if not os.path.exists(IMAGE_DIR):
         os.mkdir(IMAGE_DIR)
 
+
     IMAGES = assemble_images()
 
-    ImageDownloader().start()
+    ImageCleaner().start()
+    #mageDownloader().start()
 
     #wait for the downloader to start
     IMAGES_EVENT.wait()
     display_loading()
 
-    search_term_server = SearchTermServer(search_terms=SEARCH_TERMS)
+    search_term_server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_EVENT, search_terms=SEARCH_TERMS)
     search_term_server.start()
 
     while True:
         SEARCH_TERMS = search_term_server.search_terms
         print "Search Terms: {}".format(SEARCH_TERMS)
+
         if not IMAGES_EVENT.isSet():
-            images = list(IMAGES)
+            images = set(IMAGES)
+            update_image_cache(images)
 
         #No images, so wait until next download time.
         if not images:
