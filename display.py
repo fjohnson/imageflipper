@@ -59,7 +59,7 @@ IMAGE_CLEAN_INTERVAL = 60*60*24
 
 try:
     with open(IMAGE_BLACKLIST_FILENAME) as blacklist:
-        IMAGE_BLACKLIST = {url for url in blacklist.readlines()}
+        IMAGE_BLACKLIST = {url.strip() for url in blacklist.readlines()}
 except IOError:
     IMAGE_BLACKLIST = {}
 
