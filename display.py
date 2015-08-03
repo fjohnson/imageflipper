@@ -2,11 +2,12 @@
 Handles downloading, converting, and displaying images.
 Images are chosen based on fixed search terms'''
 
-import pygame, os, tempfile, urllib2, json, sys, random
-import threading, shutil, time, datetime
+import pygame, os, tempfile, urllib2, json, sys, random, urllib
+import threading, shutil, time, datetime, re
 from GIFImage import GIFImage
 from pygame import display, image, event, Rect
 from PIL import Image
+from server import SearchTermServer
 
 pygame.font.init()
 CODE_DIR = os.path.dirname(__file__)
@@ -30,19 +31,52 @@ RGB_BLACK = (0,0,0)
 MOUSE_LEFT = 1
 MOUSE_RIGHT = 3
 
+RESULTS_PER_PAGE = 10 # must be between 1-10
 CHUNK_SIZE = 8192
-GOOGLE_AJAX_URL = "http://ajax.googleapis.com/ajax/services/search/images?v=1.0&q={}&start={}"
-MAX_RESULTS = 5
-SEARCH_TERMS = ['vegans']
+GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?{}"
+MAX_URL_RESULT = 5
+SEARCH_TERMS = {'crystals'}
+SEARCH_ENGINE_ID = '007957652027458452999:nm6b9xle5se'
+with open("apikey") as apikey_file:
+    API_KEY = apikey_file.readline()
 
-IMAGES = []
+IMAGES = set()
 IMAGES_EVENT = threading.Event()
 IMAGES_EVENT.clear()
-IMAGES_DOWNLOAD_INTERVAL = 5 #60 * 60 * 24 #every 24 hrs scan for new images
-IMAGE_FLIP_FREQUENCY = 1
+IMAGES_DOWNLOAD_INTERVAL = 20 #60 * 60 * 24 #every 24 hrs scan for new images
+IMAGE_FLIP_FREQUENCY = 5
+IMAGE_SIZES = [
+    'xlarge',
+    'xxlarge',
+    'huge'
+]
+IMAGE_BLACKLIST_FILENAME = "urlblacklist"
+IMAGE_URL_ERRORS = {}
+IMAGE_URL_RETRY = 3
+
+try:
+    with open(IMAGE_BLACKLIST_FILENAME) as blacklist:
+        IMAGE_BLACKLIST = {url for url in blacklist.readlines()}
+except IOError:
+    IMAGE_BLACKLIST = {}
+
+
+def assemble_query(query, img_size, index=1):
+    parameters = {
+        'key': API_KEY,
+        'cx': SEARCH_ENGINE_ID,
+        'prettyPrint': 'true',
+        'searchType': 'image',
+        'imgSize': img_size,
+        'fields': 'queries(nextPage/totalResults,nextPage/startIndex),items(link)',
+        'num': RESULTS_PER_PAGE,
+        'q': query,
+        'start': index
+    }
+    return GOOGLE_API_URL.format(urllib.urlencode(parameters))
 
 def assemble_images():
-    images = []
+    images = set()
     for term in SEARCH_TERMS:
         img_dir = os.path.join(IMAGE_DIR, term)
 
@@ -51,7 +85,7 @@ def assemble_images():
 
         for img in os.listdir(img_dir):
             img_full_path = os.path.join(img_dir, img)
-            images.append(img_full_path)
+            images.add(img_full_path)
 
     return images
 
@@ -74,7 +108,6 @@ def pil_image_convert(image_path):
         new_pil_image.save(conv_filepath, format=pil_image.format)
         conv_filepath.close()
         CONVERT_CACHE[image_path] = conv_filepath.name
-        print "Converted {} -> {}".format(pil_image.filename, conv_filepath.name)
         pil_image.close()
         return new_pil_image
 
@@ -112,30 +145,48 @@ def display_image(image_path):
     screen.blit(surface_img, (coordinate_x, coordinate_y))
     display.flip()
 
-def get_result_count(search_term):
-    index = 0
-    url = GOOGLE_AJAX_URL.format(search_term, index)
-    data = json.loads(urllib2.urlopen(url).read())
-    result_count = int(''.join(data['responseData']['cursor']['resultCount'].split(',')))
-    return result_count
+def search_for_images(search_term, img_sizes, num_urls_desired=MAX_URL_RESULT):
 
-def parse_urls(json_data):
-    urls = []
-    for result in json_data['responseData']['results']:
-        urls.append(result['url'])
+    urls = set()
+
+    #return if there are no more image sizes to try the search term against
+    if not img_sizes:
+        print "Ran out of terms to search for {}".format(search_term)
+        return urls
+
+    urls_found = 0
+    next_start_index = 1
+    img_size = img_sizes[0]
+
+    while urls_found < num_urls_desired:
+        query_url = assemble_query(search_term, img_size, next_start_index)
+        try:
+            data = urllib2.urlopen(query_url).read()
+            json_data = json.loads(data)
+
+            if not json_data:
+                #json data is empty if there are no more search results so try with another image size
+                return urls.union(search_for_images(search_term, img_sizes[1:], num_urls_desired - len(urls)))
+            next_start_index = json_data['queries']['nextPage'][0]['startIndex']
+
+            for item in json_data['items']:
+                link = item['link']
+
+                #filter out x-raw-image:// urls
+                if re.match('^https?://', link) and link not in urls and link not in IMAGE_BLACKLIST:
+                    filename = link.rsplit('/')[-1]
+                    filepath = os.path.join(IMAGE_DIR, search_term, filename)
+                    if filepath not in IMAGES:
+                        urls.add(link)
+                        urls_found += 1
+                        if urls_found == num_urls_desired:
+                            break
+
+        except urllib2.HTTPError as e:
+            print 'Query Error: {}'.format(query_url)
+            print e
+            return urls
     return urls
-
-def search_for_images(search_term):
-    result_count = get_result_count(search_term)
-    if result_count == 0: return []
-
-    urls = []
-    for index in range(0, min(MAX_RESULTS, result_count)):
-        url = GOOGLE_AJAX_URL.format(search_term, index)
-        data = json.loads(urllib2.urlopen(url).read())
-        urls.extend(parse_urls(data))
-
-    return set(urls)
 
 def display_loading_progress(search_term, term_url_count, total_urls, urls_processed, term_count):
 
@@ -193,6 +244,7 @@ def clear_progress():
 
 def download_file(response, img, url):
 
+
     content_length = int(response.info().getheader('Content-Length').strip())
     bytes_read = 0
     percent_complete = 0
@@ -215,24 +267,34 @@ def download_images(term_dict, total_urls):
 
     urls_processed = 0
     for search_term in term_dict:
-        search_images_dir = os.path.join(IMAGE_DIR,search_term)
+        search_images_dir = os.path.join(IMAGE_DIR, search_term)
         if not os.path.exists(search_images_dir):
             os.mkdir(search_images_dir)
 
         url_count = len(term_dict[search_term])
         for i,url in enumerate(term_dict[search_term]):
             filename = os.path.join(search_images_dir, url.rsplit('/')[-1])
-            if not os.path.exists(filename):
-                error = False
-                with open(filename, 'w') as img:
+            error = False
+
+            with open(filename, 'w') as img:
+                try:
+                    response = urllib2.urlopen(url)
+                    download_file(response, img, url)
+                    IMAGES.add(filename)
+                except (urllib2.HTTPError, AttributeError):
+                    error = True
                     try:
-                        response = urllib2.urlopen(url)
-                        download_file(response, img, url)
-                    except urllib2.HTTPError:
-                        error = True
-                if error and os.path.exists(filename):
-                    os.unlink(filename)
-                    print "Failed to download {}".format(url)
+                        IMAGE_URL_ERRORS[url] += 1
+                        if IMAGE_URL_ERRORS[url] == IMAGE_URL_RETRY:
+                            IMAGE_BLACKLIST.add(url)
+                            print 'Blacklisted url:{}'.format(url)
+                    except KeyError:
+                        IMAGE_URL_ERRORS[url] = 1
+
+            if error and os.path.exists(filename):
+                os.unlink(filename)
+                print "Failed to download {}".format(url)
+
             display_loading_progress(search_term, url_count, total_urls, urls_processed, i+1)
             urls_processed += 1
 
@@ -241,7 +303,7 @@ def search_term_download():
     term_dict = {}
     total_urls = 0
     for term in SEARCH_TERMS:
-        term_dict[term] = search_for_images(term)
+        term_dict[term] = search_for_images(term, IMAGE_SIZES)
         total_urls += len(term_dict[term])
 
     import pprint
@@ -255,16 +317,11 @@ class ImageDownloader(threading.Thread):
         self.daemon = True
 
     def run(self):
-        global IMAGES
 
         while True:
             IMAGES_EVENT.set()
-
             search_term_download()
-            IMAGES = assemble_images()
-
             IMAGES_EVENT.clear()
-
             time.sleep(IMAGES_DOWNLOAD_INTERVAL)
 
 
@@ -312,9 +369,13 @@ def idle():
         next_tick = datetime.datetime.now()
 
 def run():
+    global SEARCH_TERMS
+    global IMAGES
 
     if not os.path.exists(IMAGE_DIR):
         os.mkdir(IMAGE_DIR)
+
+    IMAGES = assemble_images()
 
     ImageDownloader().start()
 
@@ -322,13 +383,18 @@ def run():
     IMAGES_EVENT.wait()
     display_loading()
 
-    image_index = 0
-    images = IMAGES
-    display_image(images[image_index])
+    search_term_server = SearchTermServer(search_terms=SEARCH_TERMS)
+    search_term_server.start()
 
     while True:
+        SEARCH_TERMS = search_term_server.search_terms
+        print "Search Terms: {}".format(SEARCH_TERMS)
         if not IMAGES_EVENT.isSet():
             images = list(IMAGES)
+
+        #No images, so wait until next download time.
+        if not images:
+            time.sleep(IMAGES_DOWNLOAD_INTERVAL)
 
         for image in images:
             try:
@@ -337,31 +403,19 @@ def run():
                 continue
             idle()
 
-        # ev = event.wait()
-        # if ev and ev.type == pygame.KEYDOWN and ev.key == pygame.K_SPACE:
-        #     return
-        # elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == MOUSE_LEFT:
-        #     if image_index != len(images) - 1:
-        #         image_index += 1
-        #     display_image(images[image_index])
-        # elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == MOUSE_RIGHT:
-        #     if image_index != 0:
-        #         image_index -= 1
-        #     display_image(images[image_index])
-
 def end():
     for conv_file in CONVERT_CACHE.values():
         os.unlink(conv_file)
-    shutil.rmtree(IMAGE_DIR)
+
+    with open(IMAGE_BLACKLIST_FILENAME, 'w') as blacklist:
+        for url in IMAGE_BLACKLIST:
+            blacklist.write(url+'\n')
+
 
 def debug():
-    display_image(os.path.join(IMAGE_DIR,"ramen1.jpg"))
-    while True:
-            ev = event.wait()
-            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_SPACE:
-                return
-
+    print search_for_images('crystals', IMAGE_SIZES)
 #This is a surface that can be drawn to like a regular Surface but changes will eventually be seen on the monitor.
 screen = display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))#, pygame.FULLSCREEN)
+#debug()
 run()
-end()
+#end()
