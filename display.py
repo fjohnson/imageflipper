@@ -6,6 +6,8 @@ import pygame, os, tempfile, json, sys, random
 import urllib, urllib.request, urllib.error, urllib.parse
 import threading, time, datetime, re
 import hashlib
+import signal
+import sys
 from GIFImage import GIFImage
 from pygame import display, image, event, Rect
 from PIL import Image
@@ -15,6 +17,7 @@ pygame.font.init()
 CODE_DIR = os.path.dirname(__file__)
 IMAGE_DIR = os.path.join(CODE_DIR, "images")
 LOAD_IMAGE_DIR = os.path.join(CODE_DIR, "loading_imgs")
+#currently the conversion cache never expires while this program is running.
 CONVERT_CACHE = {}
 display.init()
 
@@ -318,9 +321,6 @@ def search_term_download():
         term_dict[term] = search_for_images(term, IMAGE_SIZES)
         total_urls += len(term_dict[term])
 
-    total_urls = 5
-    import pprint
-    pprint.pprint(term_dict)
     download_images(term_dict, total_urls)
 
 
@@ -338,20 +338,10 @@ class ImageDownloader(threading.Thread):
             time.sleep(IMAGES_DOWNLOAD_INTERVAL)
 
 
-def check_for_exit(wait=False):
-    global DETAILED_PROGRESS
-
-    if wait:
-        ev = event.wait()
-    else:
-        ev = event.poll()
-
-    if ev and ev.type == pygame.KEYDOWN and ev.key == pygame.K_SPACE:
-        end()
-        sys.exit(0)
-    elif ev and ev.type == pygame.KEYDOWN and ev.key == pygame.K_DELETE:
-        DETAILED_PROGRESS = not DETAILED_PROGRESS
-        clear_progress()
+def check_for_exit():
+    for e in pygame.event.get():
+        if e.type == pygame.QUIT:
+            end()
 
 def display_loading():
         gifs = os.listdir(LOAD_IMAGE_DIR)
@@ -408,10 +398,18 @@ class ImageCleaner(threading.Thread):
             IMAGES_EVENT.clear()
             time.sleep(IMAGE_CLEAN_INTERVAL)
 
+def end():
+    print('Exiting....')
+    for conv_file in CONVERT_CACHE.values():
+        os.unlink(conv_file)
 
-def update_image_cache(images):
-    global CONVERT_CACHE
-    CONVERT_CACHE = {k:CONVERT_CACHE[k] for k in set(CONVERT_CACHE.keys()) - images}
+    with open(IMAGE_BLACKLIST_FILENAME, 'w') as blacklist:
+        for url in IMAGE_BLACKLIST:
+            blacklist.write(url+'\n')
+
+    pygame.display.quit()
+    pygame.quit()
+    sys.exit(0)
 
 def run():
     global SEARCH_TERMS
@@ -419,7 +417,6 @@ def run():
 
     if not os.path.exists(IMAGE_DIR):
         os.mkdir(IMAGE_DIR)
-
 
     IMAGES = assemble_images()
 
@@ -433,13 +430,13 @@ def run():
     search_term_server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_EVENT, search_terms=SEARCH_TERMS)
     search_term_server.start()
 
+    images = set()
     while True:
         SEARCH_TERMS = search_term_server.search_terms
         print("Search Terms: {}".format(SEARCH_TERMS))
 
         if not IMAGES_EVENT.isSet():
             images = set(IMAGES)
-            update_image_cache(images)
 
         #No images, so wait until next download time.
         if not images:
@@ -452,17 +449,8 @@ def run():
                 continue
             idle()
 
-def end():
-    for conv_file in CONVERT_CACHE.values():
-        os.unlink(conv_file)
-
-    with open(IMAGE_BLACKLIST_FILENAME, 'w') as blacklist:
-        for url in IMAGE_BLACKLIST:
-            blacklist.write(url+'\n')
-
-
 #This is a surface that can be drawn to like a regular Surface but changes will eventually be seen on the monitor.
 screen = display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))#, pygame.FULLSCREEN)
-
+signal.signal(signal.SIGINT,end)
 run()
 #end()
