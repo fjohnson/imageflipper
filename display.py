@@ -16,7 +16,14 @@ from server import SearchTermServer
 pygame.font.init()
 CODE_DIR = os.path.dirname(__file__)
 IMAGE_DIR = os.path.join(CODE_DIR, "images")
+if not os.path.exists(IMAGE_DIR): os.mkdir(IMAGE_DIR)
+
+#This path should exist already with loading images that come with the program
 LOAD_IMAGE_DIR = os.path.join(CODE_DIR, "loading_imgs")
+
+
+
+
 #currently the conversion cache never expires while this program is running.
 CONVERT_CACHE = {}
 display.init()
