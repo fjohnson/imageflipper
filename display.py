@@ -29,8 +29,8 @@ CONVERT_CACHE = {}
 display.init()
 
 highest_res = display.list_modes()[0]
-SCREEN_WIDTH = 1024 #highest_res[0]
-SCREEN_HEIGHT = 768#768 #highest_res[1]
+SCREEN_WIDTH = highest_res[0]
+SCREEN_HEIGHT = highest_res[1]
 IMAGE_SIZE = (SCREEN_WIDTH, SCREEN_HEIGHT)
 FONT_SIZE = 48
 FONT_COLOR = (255,255,0)
@@ -457,7 +457,7 @@ def run():
             idle()
 
 #This is a surface that can be drawn to like a regular Surface but changes will eventually be seen on the monitor.
-screen = display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))#, pygame.FULLSCREEN)
+screen = display.set_mode((0,0), pygame.FULLSCREEN)
 signal.signal(signal.SIGINT,end)
 run()
 #end()
