@@ -8,10 +8,14 @@ import threading, time, datetime, re
 import hashlib
 import signal
 import sys
+import requests
+import logging
 from GIFImage import GIFImage
 from pygame import display, image, event, Rect
 from PIL import Image
 from server import SearchTermServer
+
+logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.DEBUG, filename='log.log')
 
 pygame.font.init()
 CODE_DIR = os.path.dirname(__file__)
@@ -20,9 +24,6 @@ if not os.path.exists(IMAGE_DIR): os.mkdir(IMAGE_DIR)
 
 #This path should exist already with loading images that come with the program
 LOAD_IMAGE_DIR = os.path.join(CODE_DIR, "loading_imgs")
-
-
-
 
 #currently the conversion cache never expires while this program is running.
 CONVERT_CACHE = {}
@@ -118,19 +119,24 @@ def get_center_height_offset(pil_image):
 
 def pil_image_convert(image_path):
     try:
-        return Image.open(CONVERT_CACHE[image_path])
+        #will need to close this one
+        return Image.open(CONVERT_CACHE[image_path]),True
     except KeyError:
         pil_image = Image.open(image_path)
-        new_pil_image = resize_image(pil_image)
+        #no need to close this, as pil does it automatically during resize_image()
 
+        new_pil_image = resize_image(pil_image)
         conv_filepath = tempfile.NamedTemporaryFile(delete=False)
         new_pil_image.save(conv_filepath, format=pil_image.format)
         conv_filepath.close()
         CONVERT_CACHE[image_path] = conv_filepath.name
-        pil_image.close()
-        return new_pil_image
+
+        #don't need to close this image, PIL has not allocated a FP
+        return new_pil_image,False
 
 def resize_image(pil_image):
+    #pil wil close pil_image automatically when thumbnail or resize() is called
+    #the returned image does not have a file pointer so close() wont work on it either
     width = pil_image.size[0]
     height = pil_image.size[1]
 
@@ -151,15 +157,15 @@ def resize_image(pil_image):
     return pil_image.resize((new_width, new_height))
 
 def display_image(image_path):
-    pil_image = pil_image_convert(image_path)
+    pil_image,cache_hit = pil_image_convert(image_path)
 
-    conv_filepath = CONVERT_CACHE[image_path]
     coordinate_x = get_center_width_offset(pil_image)
     coordinate_y = get_center_height_offset(pil_image)
-    pil_image.close()
 
-    #returns a surface object. second argument used as name hint
-    surface_img = image.load(conv_filepath, image_path)
+    if cache_hit:
+        pil_image.close()
+
+    surface_img = image.load(CONVERT_CACHE[image_path])
     screen.fill(RGB_BLACK)
     screen.blit(surface_img, (coordinate_x, coordinate_y))
     display.flip()
@@ -170,7 +176,7 @@ def search_for_images(search_term, img_sizes, num_urls_desired=MAX_URL_RESULT):
 
     #return if there are no more image sizes to try the search term against
     if not img_sizes:
-        print("Ran out of terms to search for {}".format(search_term))
+        logging.info("Ran out of terms to search for {}".format(search_term))
         return urls
 
     urls_found = 0
@@ -180,8 +186,10 @@ def search_for_images(search_term, img_sizes, num_urls_desired=MAX_URL_RESULT):
     while urls_found < num_urls_desired:
         query_url = assemble_query(search_term, img_size, next_start_index)
         try:
-            data = urllib.request.urlopen(query_url).read()
-            json_data = json.loads(data)
+            r = requests.get(query_url)
+            if r.status_code != requests.codes.ok:
+                r.raise_for_status()
+            json_data = r.json()
 
             if not json_data:
                 #json data is empty if there are no more search results so try with another image size
@@ -202,9 +210,9 @@ def search_for_images(search_term, img_sizes, num_urls_desired=MAX_URL_RESULT):
                         if urls_found == num_urls_desired:
                             break
 
-        except urllib.error.HTTPError as e:
-            print('Query Error: {}'.format(query_url))
-            print(e)
+        except requests.exceptions.RequestException as e:
+            logging.info('Query Error: {}'.format(query_url))
+            logging.info(e)
             return urls
     return urls
 
@@ -303,19 +311,19 @@ def download_images(term_dict, total_urls):
                     IMAGES.add(filename)
                 except (urllib.error.HTTPError, urllib.error.URLError, AttributeError) as e:
                     error = True
-                    print(e)
+                    logging.info(e)
 
                     try:
                         IMAGE_URL_ERRORS[url] += 1
                         if IMAGE_URL_ERRORS[url] == IMAGE_URL_RETRY:
                             IMAGE_BLACKLIST.add(url)
-                            print('Blacklisted url:{}'.format(url))
+                            logging.info('Blacklisted url:{}'.format(url))
                     except KeyError:
                         IMAGE_URL_ERRORS[url] = 1
 
             if error and os.path.exists(filename):
                 os.unlink(filename)
-                print("Failed to download {}".format(url))
+                logging.info("Failed to download {}".format(url))
 
             display_loading_progress(search_term, url_count, total_urls, urls_processed, i+1)
             urls_processed += 1
@@ -399,14 +407,14 @@ class ImageCleaner(threading.Thread):
                     erased_images.add(image)
 
             if erased_images:
-                print("Erased images :{}".format(erased_images))
+                logging.info("Erased images :{}".format(erased_images))
 
             IMAGES = IMAGES - erased_images
             IMAGES_EVENT.clear()
             time.sleep(IMAGE_CLEAN_INTERVAL)
 
 def end():
-    print('Exiting....')
+    logging.info('Exiting....')
     for conv_file in CONVERT_CACHE.values():
         os.unlink(conv_file)
 
@@ -440,7 +448,7 @@ def run():
     images = set()
     while True:
         SEARCH_TERMS = search_term_server.search_terms
-        print("Search Terms: {}".format(SEARCH_TERMS))
+        logging.info("Search Terms: {}".format(SEARCH_TERMS))
 
         if not IMAGES_EVENT.isSet():
             images = set(IMAGES)
