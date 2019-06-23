@@ -31,7 +31,7 @@ class SearchTermServer(threading.Thread):
 
     @staticmethod
     def check_space():
-        return shutil.disk_usage("\\")
+        return shutil.disk_usage("/")
 
 
     @staticmethod
@@ -71,7 +71,7 @@ class SearchTermServer(threading.Thread):
             self.EOT = "\x04"
             self.welcome_msg = b'''
 Add new search terms by entering in a term then a new line or a comma seperated list followed by a new line. Remove search terms by prefixing with a "-". Send an EOF to exit.
-Type "^space" to determine device space left. Type "^clear" to erase images older than 30 days. Type "^idea" to return image directory magnitude.'''
+Type "^space" to determine device space left. Type "^clear" to erase images older than 30 days. Type "^idea" to return image directory magnitude.\n'''
 
         def handle(self):
             self.wfile.write(self.welcome_msg)
@@ -112,7 +112,7 @@ Type "^space" to determine device space left. Type "^clear" to erase images olde
                             self.wfile.write(bytes(" ERROR: {}\n".format(e), 'utf-8'))
                     elif term:
                         terms_copy.add(term)
-                self.wfile.write(bytes(self.data, 'utf-8'))
+
                 self.wfile.write(bytes("Search terms: {}\n:".format(terms_copy), 'utf-8'))
                 self.data = self.rfile.readline().strip().decode('utf-8')
 
