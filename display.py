@@ -475,7 +475,7 @@ def run():
     id.start()
     display_loading(id)
 
-    search_term_server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_LOCK, search_terms=SEARCH_TERMS)
+    search_term_server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_LOCK, logging, search_terms=SEARCH_TERMS)
     search_term_server.start()
 
     images = set()

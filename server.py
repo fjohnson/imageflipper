@@ -10,12 +10,15 @@ class SearchTermServer(threading.Thread):
     image_directory = None
     images_being_displayed = None
     image_lock = None
+    logger = None
 
-    def __init__(self, image_dir, display_image_set, image_lock, daemon=True, search_terms=None):
+    def __init__(self, image_dir, display_image_set, image_lock, logger, daemon=True, search_terms=None):
         super(self.__class__, self).__init__()
         self.daemon = daemon
         self.host = "localhost"
         self.port = 9999
+        SearchTermServer.logger = logger
+
         if search_terms is None:
             SearchTermServer.search_terms = {}
         else:
@@ -95,6 +98,7 @@ Type "^space" to determine device space left. Type "^clear" to erase images olde
                             self.wfile.write(ss_str.encode('utf-8'))
                         except IOError as e:
                             self.wfile.write(bytes(" ERROR: {}\n".format(e), 'utf-8'))
+                            SearchTermServer.logger.info(" ERROR: {}\n".format(e))
                     elif term == "^clear":
                         self.wfile.write(b"Wait...")
                         try:
@@ -102,7 +106,7 @@ Type "^space" to determine device space left. Type "^clear" to erase images olde
                             self.wfile.write(b" Ok Done *_*.\n")
                         except IOError as e:
                             self.wfile.write(bytes(" ERROR: {}\n".format(e), 'utf-8'))
-
+                            SearchTermServer.logger.info(" ERROR: {}\n".format(e))
                     elif term == "^idea":
                         self.wfile.write(b"Calculating... ")
                         try:
@@ -110,6 +114,7 @@ Type "^space" to determine device space left. Type "^clear" to erase images olde
                             self.wfile.write(bytes("Space used: {}G {}M\n".format(gigs, megs), 'utf-8'))
                         except IOError as e:
                             self.wfile.write(bytes(" ERROR: {}\n".format(e), 'utf-8'))
+                            SearchTermServer.logger.info(" ERROR: {}\n".format(e))
                     elif term:
                         terms_copy.add(term)
 
