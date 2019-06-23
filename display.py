@@ -48,7 +48,7 @@ RESULTS_PER_PAGE = 10 # must be between 1-10
 CHUNK_SIZE = 8192
 GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?{}"
 MAX_URL_RESULT = 5
-SEARCH_TERMS = {'crystals', 'jeans', 'x-men'}
+SEARCH_TERMS = {}
 SEARCH_ENGINE_ID = '007957652027458452999:nm6b9xle5se'
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.110 Safari/537.36'
 #with open("apikey") as apikey_file:
@@ -64,10 +64,11 @@ IMAGE_SIZES = [
     'xxlarge',
     'huge'
 ]
-IMAGE_BLACKLIST_FILENAME = "urlblacklist"
+IMAGE_BLACKLIST_FILENAME = os.path.join(CODE_DIR,"urlblacklist")
 IMAGE_URL_ERRORS = {}
 IMAGE_URL_RETRY = 3
 
+SEARCH_TERM_FILENAME = os.path.join(CODE_DIR,'search_terms')
 MAX_FILE_AGE = 60 * 60 * 24 * 90 # 90 days
 IMAGE_CLEAN_INTERVAL = 60*60*24
 
@@ -434,14 +435,25 @@ class ImageCleaner(threading.Thread):
 
             time.sleep(IMAGE_CLEAN_INTERVAL)
 
+def get_saved_terms():
+    try:
+        with open(SEARCH_TERM_FILENAME) as saved_term_file:
+            return set(saved_term_file.readlines())
+    except FileNotFoundError:
+        return set()
+
 def end():
     logging.info('Exiting....')
     for conv_file in CONVERT_CACHE.values():
         os.unlink(conv_file)
 
     with open(IMAGE_BLACKLIST_FILENAME, 'w') as blacklist:
+        blacklist.writelines(IMAGE_BLACKLIST)
         for url in IMAGE_BLACKLIST:
             blacklist.write(url+'\n')
+
+    with open(SEARCH_TERM_FILENAME, 'w') as saved_term_file:
+        saved_term_file.writelines(SEARCH_TERMS)
 
     pygame.display.quit()
     pygame.quit()
@@ -450,6 +462,8 @@ def end():
 def run():
     global SEARCH_TERMS
     global IMAGES
+
+    SEARCH_TERMS = get_saved_terms()
 
     if not os.path.exists(IMAGE_DIR):
         os.mkdir(IMAGE_DIR)
