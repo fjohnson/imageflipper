@@ -9,7 +9,7 @@ class SearchTermServer(threading.Thread):
     search_terms = set()
     image_directory = None
     images_being_displayed = None
-    image_event_lock = None
+    image_lock = None
 
     def __init__(self, image_dir, display_image_set, image_lock, daemon=True, search_terms=None):
         super(self.__class__, self).__init__()
@@ -23,7 +23,7 @@ class SearchTermServer(threading.Thread):
 
         SearchTermServer.image_directory = image_dir
         SearchTermServer.images_being_displayed = display_image_set
-        SearchTermServer.image_event_lock = image_lock
+        SearchTermServer.image_lock = image_lock
 
     def run(self):
         server = socketserver.TCPServer((self.host, self.port), SearchTermServer.TCPHandler)
@@ -36,15 +36,16 @@ class SearchTermServer(threading.Thread):
 
     @staticmethod
     def clear_oldies():
-        SearchTermServer.image_event_lock.set()
+
         days_30 = 60*60*24*30
         current_time = time.time()
 
         for img_file in list(SearchTermServer.images_being_displayed):
             if current_time - os.stat(img_file).st_mtime >= days_30:
                 os.unlink(img_file)
+                SearchTermServer.image_lock.acquire()
                 SearchTermServer.images_being_displayed.remove(img_file)
-        SearchTermServer.image_event_lock.clear()
+                SearchTermServer.image_lock.release()
 
     @staticmethod
     def image_space_taken():

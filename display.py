@@ -56,8 +56,7 @@ USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 API_KEY = "AIzaSyAtLp1P49VQbGO33Lxie4Un-ZaLLEhvOhw"
 
 IMAGES = set()
-IMAGES_EVENT = threading.Event()
-IMAGES_EVENT.clear()
+IMAGES_LOCK = threading.Lock()
 IMAGES_DOWNLOAD_INTERVAL = 60 * 60#60 * 60 * 24 #every 24 hrs scan for new images
 IMAGE_FLIP_FREQUENCY = 5
 IMAGE_SIZES = [
@@ -73,6 +72,8 @@ MAX_FILE_AGE = 60 * 60 * 24 * 90 # 90 days
 IMAGE_CLEAN_INTERVAL = 60*60*24
 
 QUERY_CACHE = {} #key = query, value = search result page index
+
+SCREEN_LOCK = threading.Lock()
 
 try:
     with open(IMAGE_BLACKLIST_FILENAME) as blacklist:
@@ -166,9 +167,12 @@ def display_image(image_path):
         pil_image.close()
 
     surface_img = image.load(CONVERT_CACHE[image_path])
+
+    SCREEN_LOCK.acquire()
     screen.fill(RGB_BLACK)
     screen.blit(surface_img, (coordinate_x, coordinate_y))
     display.flip()
+    SCREEN_LOCK.release()
 
 def search_for_images(search_term, img_sizes, num_urls_desired=MAX_URL_RESULT):
 
@@ -227,11 +231,13 @@ def display_loading_progress(search_term, term_url_count, total_urls, urls_proce
     x_coord = SCREEN_WIDTH - len(msg) * loading_font_size
     y_coord = 0
 
+    SCREEN_LOCK.acquire()
     screen.fill(RGB_BLACK, Rect(x_coord, y_coord, len(msg) * loading_font_size, loading_font_size + TEXT_PADDING))
     screen.blit(text, (x_coord, y_coord))
 
     if not DETAILED_PROGRESS:
         display.flip()
+        SCREEN_LOCK.release()
         return
 
     progress_font_size = LOADING_FONT_DETAILED.get_ascent()
@@ -242,11 +248,13 @@ def display_loading_progress(search_term, term_url_count, total_urls, urls_proce
     text = LOADING_FONT_DETAILED.render(msg, 1, FONT_COLOR)
     screen.blit(text, (0, y_coord))
     display.flip()
+    SCREEN_LOCK.release()
 
 def display_file_download_progress(content_length, bytes_read, url, percent_complete):
     if not DETAILED_PROGRESS:
         return
 
+    SCREEN_LOCK.acquire()
     progress_font_size = LOADING_FONT_DETAILED.get_ascent()
     y_coord_url = SCREEN_HEIGHT - progress_font_size*3 - TEXT_PADDING*3
     y_coord_dl = SCREEN_HEIGHT - progress_font_size*2 - TEXT_PADDING*2
@@ -262,6 +270,7 @@ def display_file_download_progress(content_length, bytes_read, url, percent_comp
     screen.blit(text, (0, y_coord_dl))
 
     display.flip()
+    SCREEN_LOCK.release()
 
 def clear_progress():
     font_size = LOADING_FONT_DETAILED.get_ascent()
@@ -308,7 +317,9 @@ def download_images(term_dict, total_urls):
                 try:
                     response = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': USER_AGENT}))
                     download_file(response, img, url)
+                    IMAGES_LOCK.acquire()
                     IMAGES.add(filename)
+                    IMAGES_LOCK.release()
                 except (urllib.error.HTTPError, urllib.error.URLError, AttributeError) as e:
                     error = True
                     logging.info(e)
@@ -343,13 +354,13 @@ class ImageDownloader(threading.Thread):
     def __init__(self):
         super(self.__class__, self).__init__()
         self.daemon = True
+        self.init_load_event = False
 
     def run(self):
 
         while True:
-            IMAGES_EVENT.set()
             search_term_download()
-            IMAGES_EVENT.clear()
+            self.init_load_event = True
             time.sleep(IMAGES_DOWNLOAD_INTERVAL)
 
 
@@ -357,21 +368,26 @@ def check_for_exit():
     for e in pygame.event.get():
         if e.type == pygame.QUIT:
             end()
+        elif e.type == pygame.KEYDOWN:
+            if e.key == pygame.K_q:
+                end()
 
-def display_loading():
+
+def display_loading(id):
         gifs = os.listdir(LOAD_IMAGE_DIR)
         loading_gif = GIFImage(os.path.join(LOAD_IMAGE_DIR, random.choice(gifs)))
 
         x_coord = get_center_width_offset(loading_gif.image)
         y_coord = get_center_height_offset(loading_gif.image)
 
-        screen.fill(RGB_BLACK)
-        display.flip()
         while True:
+
+            SCREEN_LOCK.acquire()
             loading_gif.render(screen, (x_coord,y_coord))
             display.flip()
+            SCREEN_LOCK.release()
 
-            if not IMAGES_EVENT.isSet():
+            if id.init_load_event:
                 return
 
             check_for_exit()
@@ -396,10 +412,13 @@ class ImageCleaner(threading.Thread):
         global IMAGES
 
         while True:
-            IMAGES_EVENT.set()
+            IMAGES_LOCK.acquire()
+            images = set(IMAGES)
+            IMAGES_LOCK.release()
+
             erased_images = set()
 
-            for image in IMAGES:
+            for image in images:
                 age_seconds = os.stat(image).st_mtime
                 time_now = time.time()
                 if time_now - age_seconds > MAX_FILE_AGE:
@@ -409,8 +428,10 @@ class ImageCleaner(threading.Thread):
             if erased_images:
                 logging.info("Erased images :{}".format(erased_images))
 
+            IMAGES_LOCK.acquire()
             IMAGES = IMAGES - erased_images
-            IMAGES_EVENT.clear()
+            IMAGES_LOCK.release()
+
             time.sleep(IMAGE_CLEAN_INTERVAL)
 
 def end():
@@ -436,13 +457,11 @@ def run():
     IMAGES = assemble_images()
 
     ImageCleaner().start()
-    ImageDownloader().start()
+    id = ImageDownloader()
+    id.start()
+    display_loading(id)
 
-    #wait for the downloader to start
-    IMAGES_EVENT.wait()
-    display_loading()
-
-    search_term_server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_EVENT, search_terms=SEARCH_TERMS)
+    search_term_server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_LOCK, search_terms=SEARCH_TERMS)
     search_term_server.start()
 
     images = set()
@@ -450,8 +469,9 @@ def run():
         SEARCH_TERMS = search_term_server.search_terms
         logging.info("Search Terms: {}".format(SEARCH_TERMS))
 
-        if not IMAGES_EVENT.isSet():
-            images = set(IMAGES)
+        IMAGES_LOCK.acquire()
+        images = set(IMAGES)
+        IMAGES_LOCK.release()
 
         #No images, so wait until next download time.
         if not images:
