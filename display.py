@@ -215,10 +215,11 @@ def search_for_images(search_term, img_sizes, num_urls_desired=MAX_URL_RESULT):
                         if urls_found == num_urls_desired:
                             break
 
-        except requests.exceptions.RequestException as e:
+        except (requests.exceptions.RequestException, KeyError) as e:
             logging.info('Query Error: {}'.format(query_url))
             logging.info(e)
             return urls
+
     return urls
 
 def display_loading_progress(search_term, term_url_count, total_urls, urls_processed, term_count):
@@ -438,7 +439,7 @@ class ImageCleaner(threading.Thread):
 def get_saved_terms():
     try:
         with open(SEARCH_TERM_FILENAME) as saved_term_file:
-            return set(saved_term_file.readlines())
+            return set(map(str.strip,saved_term_file.readlines()))
     except FileNotFoundError:
         return set()
 
@@ -448,12 +449,10 @@ def end():
         os.unlink(conv_file)
 
     with open(IMAGE_BLACKLIST_FILENAME, 'w') as blacklist:
-        blacklist.writelines(IMAGE_BLACKLIST)
-        for url in IMAGE_BLACKLIST:
-            blacklist.write(url+'\n')
+        blacklist.writelines('\n'.join(IMAGE_BLACKLIST))
 
     with open(SEARCH_TERM_FILENAME, 'w') as saved_term_file:
-        saved_term_file.writelines(SEARCH_TERMS)
+        saved_term_file.writelines('\n'.join(SEARCH_TERMS))
 
     pygame.display.quit()
     pygame.quit()
