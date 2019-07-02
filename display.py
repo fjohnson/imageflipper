@@ -11,11 +11,24 @@ import sys
 import requests
 import logging
 from GIFImage import GIFImage
-from pygame import display, image, event, Rect
+from pygame import display, image, Rect
 from PIL import Image
 from server import SearchTermServer
 
-logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p', level=logging.DEBUG, filename='log.log')
+formatter = logging.Formatter(fmt='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+
+def make_logger(name, filename, level):
+    handler = logging.FileHandler(filename)
+    handler.setFormatter(formatter)
+
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    logger.addHandler(handler)
+
+    return logger
+
+main_logger = make_logger('main_logger', 'log.log', logging.DEBUG)
+logger_store = {}
 
 pygame.font.init()
 CODE_DIR = os.path.dirname(__file__)
@@ -48,7 +61,7 @@ RESULTS_PER_PAGE = 10 # must be between 1-10
 CHUNK_SIZE = 8192
 GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?{}"
 MAX_URL_RESULT = 5
-SEARCH_TERMS = {}
+SEARCH_TERMS = {'banana'}
 SEARCH_ENGINE_ID = '007957652027458452999:nm6b9xle5se'
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.110 Safari/537.36'
 #with open("apikey") as apikey_file:
@@ -177,11 +190,12 @@ def display_image(image_path):
 
 def search_for_images(search_term, img_sizes, num_urls_desired=MAX_URL_RESULT):
 
+    term_logger = setup_term_logger(search_term)
     urls = set()
 
     #return if there are no more image sizes to try the search term against
     if not img_sizes:
-        logging.info("Ran out of terms to search for {}".format(search_term))
+        term_logger.info("Ran out of images to search for {}".format(search_term))
         return urls
 
     urls_found = 0
@@ -198,6 +212,7 @@ def search_for_images(search_term, img_sizes, num_urls_desired=MAX_URL_RESULT):
 
             if not json_data:
                 #json data is empty if there are no more search results so try with another image size
+                term_logger.info("No search results for {} {}".format(search_term, img_size))
                 return urls.union(search_for_images(search_term, img_sizes[1:], num_urls_desired - len(urls)))
             next_start_index = json_data['queries']['nextPage'][0]['startIndex']
             QUERY_CACHE[search_term+img_size] = next_start_index
@@ -212,12 +227,17 @@ def search_for_images(search_term, img_sizes, num_urls_desired=MAX_URL_RESULT):
                     if filepath not in IMAGES:
                         urls.add(link)
                         urls_found += 1
+                        term_logger.info("Found {} {} {}".format(filepath, img_size, filename_hash))
                         if urls_found == num_urls_desired:
                             break
 
+
         except (requests.exceptions.RequestException, KeyError) as e:
-            logging.info('Query Error: {}'.format(query_url))
-            logging.info(e)
+            error_str = 'Query Error: {}'.format(query_url)
+            main_logger.info(error_str)
+            term_logger.info(error_str)
+            main_logger.info(e)
+            term_logger.info(e)
             return urls
 
     return urls
@@ -305,11 +325,10 @@ def download_images(term_dict, total_urls):
 
     urls_processed = 0
     for search_term in term_dict:
+        term_logger = logger_store[search_term]
         search_images_dir = os.path.join(IMAGE_DIR, search_term)
-        if not os.path.exists(search_images_dir):
-            os.mkdir(search_images_dir)
-
         url_count = len(term_dict[search_term])
+
         for i,url in enumerate(term_dict[search_term]):
             filename_hash = hashlib.sha1(url.encode('utf-8')).hexdigest()
             filename = os.path.join(search_images_dir, filename_hash)
@@ -322,35 +341,45 @@ def download_images(term_dict, total_urls):
                     IMAGES_LOCK.acquire()
                     IMAGES.add(filename)
                     IMAGES_LOCK.release()
+                    term_logger.info("Downloaded {} {}".format(url, filename_hash))
                 except (urllib.error.HTTPError, urllib.error.URLError, AttributeError) as e:
                     error = True
-                    logging.info(e)
+                    main_logger.info(e)
+                    term_logger.info(e)
 
                     try:
                         IMAGE_URL_ERRORS[url] += 1
                         if IMAGE_URL_ERRORS[url] == IMAGE_URL_RETRY:
                             IMAGE_BLACKLIST.add(url)
-                            logging.info('Blacklisted url:{}'.format(url))
+                            term_logger.info('Blacklisted url:{}'.format(url))
                     except KeyError:
                         IMAGE_URL_ERRORS[url] = 1
 
             if error and os.path.exists(filename):
                 os.unlink(filename)
-                logging.info("Failed to download {}".format(url))
+                term_logger.info("Failed to download {}".format(url))
 
             display_loading_progress(search_term, url_count, total_urls, urls_processed, i+1)
             urls_processed += 1
 
 
+def setup_term_logger(term):
+    search_images_dir = os.path.join(IMAGE_DIR, term)
+    if not os.path.exists(search_images_dir):
+        os.mkdir(search_images_dir)
+    logger_store[term] = make_logger(term, os.path.join(search_images_dir, '{}.log'.format(term)), logging.DEBUG)
+    return logger_store[term]
+
 def search_term_download():
     term_dict = {}
     total_urls = 0
+
     for term in SEARCH_TERMS:
         term_dict[term] = search_for_images(term, IMAGE_SIZES)
         total_urls += len(term_dict[term])
 
     download_images(term_dict, total_urls)
-
+    SearchTermServer.new_term_event.clear()
 
 class ImageDownloader(threading.Thread):
     def __init__(self):
@@ -363,8 +392,7 @@ class ImageDownloader(threading.Thread):
         while True:
             search_term_download()
             self.init_load_event = True
-            time.sleep(IMAGES_DOWNLOAD_INTERVAL)
-
+            SearchTermServer.new_term_event.wait(IMAGES_DOWNLOAD_INTERVAL)
 
 def check_for_exit():
     for e in pygame.event.get():
@@ -428,7 +456,7 @@ class ImageCleaner(threading.Thread):
                     erased_images.add(image)
 
             if erased_images:
-                logging.info("Erased images :{}".format(erased_images))
+                main_logger.info("Erased images :{}".format(erased_images))
 
             IMAGES_LOCK.acquire()
             IMAGES = IMAGES - erased_images
@@ -444,7 +472,7 @@ def get_saved_terms():
         return set()
 
 def end():
-    logging.info('Exiting....')
+    main_logger.info('Exiting....')
     for conv_file in CONVERT_CACHE.values():
         os.unlink(conv_file)
 
@@ -480,7 +508,7 @@ def run():
     images = set()
     while True:
         SEARCH_TERMS = search_term_server.search_terms
-        logging.info("Search Terms: {}".format(SEARCH_TERMS))
+        main_logger.info("Search Terms: {}".format(SEARCH_TERMS))
 
         IMAGES_LOCK.acquire()
         images = set(IMAGES)
@@ -488,7 +516,7 @@ def run():
 
         #No images, so wait until next download time.
         if not images:
-            time.sleep(IMAGES_DOWNLOAD_INTERVAL)
+            search_term_server.new_term_event.wait(IMAGES_DOWNLOAD_INTERVAL)
 
         for image in images:
             try:
@@ -498,7 +526,8 @@ def run():
             idle()
 
 #This is a surface that can be drawn to like a regular Surface but changes will eventually be seen on the monitor.
-screen = display.set_mode((0,0), pygame.FULLSCREEN)
+#screen = display.set_mode((0,0), pygame.FULLSCREEN)
+screen = display.set_mode((800,600))
 signal.signal(signal.SIGINT,end)
 run()
 #end()

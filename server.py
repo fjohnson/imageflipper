@@ -11,12 +11,14 @@ class SearchTermServer(threading.Thread):
     images_being_displayed = None
     image_lock = None
     logger = None
+    new_term_event = threading.Event()
 
     def __init__(self, image_dir, display_image_set, image_lock, logger, daemon=True, search_terms=None):
         super(self.__class__, self).__init__()
         self.daemon = daemon
         self.host = "localhost"
         self.port = 9999
+
         SearchTermServer.logger = logger
 
         if search_terms is None:
@@ -71,9 +73,8 @@ class SearchTermServer(threading.Thread):
 
         def setup(self):
             socketserver.StreamRequestHandler.setup(self)
-            self.EOT = "\x04"
             self.welcome_msg = b'''
-Add new search terms by entering in a term then a new line or a comma seperated list followed by a new line. Remove search terms by prefixing with a "-". Send an EOF to exit.
+Add new search terms by entering in a term then a new line or a comma seperated list followed by a new line. Remove search terms by prefixing with a "-". Send ^exit to exit.
 Type "^space" to determine device space left. Type "^clear" to erase images older than 30 days. Type "^idea" to return image directory magnitude.\n'''
 
         def handle(self):
@@ -83,12 +84,15 @@ Type "^space" to determine device space left. Type "^clear" to erase images olde
             terms_copy = set(SearchTermServer.search_terms)
             self.data = self.rfile.readline().strip().decode('utf-8')
 
-            while self.data != self.EOT:
+            added_or_removed = False
+            while self.data != "^exit":
                 user_terms = map(str.strip, self.data.split(','))
+
                 for term in user_terms:
                     if term.startswith("-"):
                         try:
                             terms_copy.remove(term[1:])
+                            added_or_removed = True
                         except KeyError:
                             pass
                     elif term == "^space":
@@ -117,13 +121,15 @@ Type "^space" to determine device space left. Type "^clear" to erase images olde
                             SearchTermServer.logger.info(" ERROR: {}\n".format(e))
                     elif term:
                         terms_copy.add(term)
+                        added_or_removed = True
 
-                self.wfile.write(bytes("Search terms: {}\n:".format(terms_copy), 'utf-8'))
+                if added_or_removed == True:
+                    SearchTermServer.search_terms = terms_copy
+                    SearchTermServer.new_term_event.set()
+
+                added_or_removed = False
+
                 self.data = self.rfile.readline().strip().decode('utf-8')
-
-            SearchTermServer.search_terms = terms_copy
-
-            self.wfile.write(bytes("Updated search terms: {}\n".format(SearchTermServer.search_terms), 'utf-8'))
             self.wfile.write(b"Good bye.\n")
 
 if __name__ == '__main__':
