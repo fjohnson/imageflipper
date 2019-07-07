@@ -2,7 +2,7 @@
 Handles downloading, converting, and displaying images.
 Images are chosen based on fixed search terms'''
 
-import pygame, os, tempfile, json, sys, random
+import pygame, os, tempfile, random
 import urllib, urllib.request, urllib.error, urllib.parse
 import threading, time, datetime, re
 import hashlib
@@ -10,6 +10,7 @@ import signal
 import sys
 import requests
 import logging
+import pickle
 from GIFImage import GIFImage
 from pygame import display, image, Rect
 from PIL import Image
@@ -57,10 +58,11 @@ RGB_BLACK = (0,0,0)
 MOUSE_LEFT = 1
 MOUSE_RIGHT = 3
 
+#API only returns 100 pages of results. To get the maximum return, specify
+#the max number of results per page which is 10
 RESULTS_PER_PAGE = 10 # must be between 1-10
 CHUNK_SIZE = 8192
 GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?{}"
-MAX_URL_RESULT = 5
 SEARCH_TERMS = {'banana'}
 SEARCH_ENGINE_ID = '007957652027458452999:nm6b9xle5se'
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.110 Safari/537.36'
@@ -78,14 +80,16 @@ IMAGE_SIZES = [
     'huge'
 ]
 IMAGE_BLACKLIST_FILENAME = os.path.join(CODE_DIR,"urlblacklist")
-IMAGE_URL_ERRORS = {}
-IMAGE_URL_RETRY = 3
 
 SEARCH_TERM_FILENAME = os.path.join(CODE_DIR,'search_terms')
 MAX_FILE_AGE = 60 * 60 * 24 * 90 # 90 days
 IMAGE_CLEAN_INTERVAL = 60*60*24
 
-QUERY_CACHE = {} #key = query, value = search result page index
+try:
+    with open("qc.pickle", "rb") as qc_pickle_file:
+        QUERY_CACHE = pickle.load(qc_pickle_file)
+except (pickle.UnpicklingError, FileNotFoundError, TypeError):
+    QUERY_CACHE = {} #key = query, value = search result page index
 
 SCREEN_LOCK = threading.Lock()
 
@@ -100,6 +104,7 @@ def assemble_query(query, img_size, index=1):
     parameters = {
         'key': API_KEY,
         'cx': SEARCH_ENGINE_ID,
+        'filter': 1,
         'prettyPrint': 'true',
         'searchType': 'image',
         'imgSize': img_size,
@@ -188,7 +193,7 @@ def display_image(image_path):
     display.flip()
     SCREEN_LOCK.release()
 
-def search_for_images(search_term, img_sizes, num_urls_desired=MAX_URL_RESULT):
+def search_for_images(search_term, img_sizes, num_urls_desired=RESULTS_PER_PAGE):
 
     term_logger = setup_term_logger(search_term)
     urls = set()
@@ -202,9 +207,20 @@ def search_for_images(search_term, img_sizes, num_urls_desired=MAX_URL_RESULT):
     img_size = img_sizes[0]
     next_start_index = QUERY_CACHE.get(search_term+img_size, 1)
 
+    #API only returns a maximum of 100 results
+    if next_start_index + RESULTS_PER_PAGE > 100:
+        #if we have exhausted searching every image size, clear the cache and start again
+        if len(img_sizes) == 1:
+            for img_s in IMAGE_SIZES:
+                QUERY_CACHE[search_term+img_s] = 1
+        else:
+            #otherwise, try another image size
+            return urls.union(search_for_images(search_term, img_sizes[1:], num_urls_desired - len(urls)))
+
     while urls_found < num_urls_desired:
         query_url = assemble_query(search_term, img_size, next_start_index)
         try:
+            term_logger.info('Requesting url with term:{} size:{} start_index:{}'.format(search_term, img_size, next_start_index))
             r = requests.get(query_url)
             if r.status_code != requests.codes.ok:
                 r.raise_for_status()
@@ -347,13 +363,15 @@ def download_images(term_dict, total_urls):
                     main_logger.info(e)
                     term_logger.info(e)
 
-                    try:
-                        IMAGE_URL_ERRORS[url] += 1
-                        if IMAGE_URL_ERRORS[url] == IMAGE_URL_RETRY:
-                            IMAGE_BLACKLIST.add(url)
-                            term_logger.info('Blacklisted url:{}'.format(url))
-                    except KeyError:
-                        IMAGE_URL_ERRORS[url] = 1
+                    IMAGE_BLACKLIST.add(url)
+                    term_logger.info('Blacklisted url:{}'.format(url))
+                    # try:
+                    #     IMAGE_URL_ERRORS[url] += 1
+                    #     if IMAGE_URL_ERRORS[url] == IMAGE_URL_RETRY:
+                    #         IMAGE_BLACKLIST.add(url)
+                    #         term_logger.info('Blacklisted url:{}'.format(url))
+                    # except KeyError:
+                    #     IMAGE_URL_ERRORS[url] = 1
 
             if error and os.path.exists(filename):
                 os.unlink(filename)
@@ -367,8 +385,11 @@ def setup_term_logger(term):
     search_images_dir = os.path.join(IMAGE_DIR, term)
     if not os.path.exists(search_images_dir):
         os.mkdir(search_images_dir)
-    logger_store[term] = make_logger(term, os.path.join(search_images_dir, '{}.log'.format(term)), logging.DEBUG)
-    return logger_store[term]
+    try:
+        logger = logger_store[term]
+    except KeyError:
+        logger = logger_store[term] = make_logger(term, os.path.join(search_images_dir, '{}.log'.format(term)), logging.DEBUG)
+    return logger
 
 def search_term_download():
     term_dict = {}
@@ -393,6 +414,7 @@ class ImageDownloader(threading.Thread):
             search_term_download()
             self.init_load_event = True
             SearchTermServer.new_term_event.wait(IMAGES_DOWNLOAD_INTERVAL)
+            print('woke up id')
 
 def check_for_exit():
     for e in pygame.event.get():
@@ -473,6 +495,7 @@ def get_saved_terms():
 
 def end():
     main_logger.info('Exiting....')
+
     for conv_file in CONVERT_CACHE.values():
         os.unlink(conv_file)
 
@@ -481,6 +504,12 @@ def end():
 
     with open(SEARCH_TERM_FILENAME, 'w') as saved_term_file:
         saved_term_file.writelines('\n'.join(SEARCH_TERMS))
+
+    try:
+        with open("qc.pickle",'wb') as qc_pickle_file:
+            pickle.dump(QUERY_CACHE, qc_pickle_file, pickle.DEFAULT_PROTOCOL)
+    except (pickle.PickleError, pickle.PicklingError) as e:
+        main_logger.info('Failed to pickle query cache: {}'.format(e))
 
     pygame.display.quit()
     pygame.quit()
@@ -502,10 +531,9 @@ def run():
     id.start()
     display_loading(id)
 
-    search_term_server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_LOCK, logging, search_terms=SEARCH_TERMS)
+    search_term_server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_LOCK, search_terms=SEARCH_TERMS)
     search_term_server.start()
 
-    images = set()
     while True:
         SEARCH_TERMS = search_term_server.search_terms
         main_logger.info("Search Terms: {}".format(SEARCH_TERMS))
@@ -517,6 +545,7 @@ def run():
         #No images, so wait until next download time.
         if not images:
             search_term_server.new_term_event.wait(IMAGES_DOWNLOAD_INTERVAL)
+            print("woke up run()")
 
         for image in images:
             try:
@@ -527,7 +556,7 @@ def run():
 
 #This is a surface that can be drawn to like a regular Surface but changes will eventually be seen on the monitor.
 #screen = display.set_mode((0,0), pygame.FULLSCREEN)
-screen = display.set_mode((800,600))
+screen = display.set_mode((1024,768))
 signal.signal(signal.SIGINT,end)
 run()
 #end()
