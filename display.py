@@ -72,7 +72,7 @@ API_KEY = "AIzaSyAtLp1P49VQbGO33Lxie4Un-ZaLLEhvOhw"
 
 IMAGES = set()
 IMAGES_LOCK = threading.Lock()
-IMAGES_DOWNLOAD_INTERVAL = 60 * 60#60 * 60 * 24 #every 24 hrs scan for new images
+IMAGES_DOWNLOAD_INTERVAL = 60 * 60 * 10
 IMAGE_FLIP_FREQUENCY = 5
 IMAGE_SIZES = [
     'xlarge',
@@ -207,18 +207,19 @@ def search_for_images(search_term, img_sizes, num_urls_desired=RESULTS_PER_PAGE)
     img_size = img_sizes[0]
     next_start_index = QUERY_CACHE.get(search_term+img_size, 1)
 
-    #API only returns a maximum of 100 results
-    if next_start_index + RESULTS_PER_PAGE > 100:
-        #if we have exhausted searching every image size, clear the cache and start again
-        if len(img_sizes) == 1:
-            for img_s in IMAGE_SIZES:
-                QUERY_CACHE[search_term+img_s] = 1
-        else:
-            #otherwise, try another image size
-            return urls.union(search_for_images(search_term, img_sizes[1:], num_urls_desired - len(urls)))
-
     while urls_found < num_urls_desired:
+        # API only returns a maximum of 100 results
+        if next_start_index + RESULTS_PER_PAGE > 100:
+            # if we have exhausted searching every image size, clear the cache and start again
+            if len(img_sizes) == 1:
+                for img_s in IMAGE_SIZES:
+                    QUERY_CACHE[search_term + img_s] = 1
+            else:
+                # otherwise, try another image size
+                return urls.union(search_for_images(search_term, img_sizes[1:], num_urls_desired - len(urls)))
+
         query_url = assemble_query(search_term, img_size, next_start_index)
+
         try:
             term_logger.info('Requesting url with term:{} size:{} start_index:{}'.format(search_term, img_size, next_start_index))
             r = requests.get(query_url)
@@ -230,8 +231,6 @@ def search_for_images(search_term, img_sizes, num_urls_desired=RESULTS_PER_PAGE)
                 #json data is empty if there are no more search results so try with another image size
                 term_logger.info("No search results for {} {}".format(search_term, img_size))
                 return urls.union(search_for_images(search_term, img_sizes[1:], num_urls_desired - len(urls)))
-            next_start_index = json_data['queries']['nextPage'][0]['startIndex']
-            QUERY_CACHE[search_term+img_size] = next_start_index
 
             for item in json_data['items']:
                 link = item['link']
@@ -247,6 +246,8 @@ def search_for_images(search_term, img_sizes, num_urls_desired=RESULTS_PER_PAGE)
                         if urls_found == num_urls_desired:
                             break
 
+            next_start_index = json_data['queries']['nextPage'][0]['startIndex']
+            QUERY_CACHE[search_term+img_size] = next_start_index
 
         except (requests.exceptions.RequestException, KeyError) as e:
             error_str = 'Query Error: {}'.format(query_url)
@@ -493,7 +494,8 @@ def get_saved_terms():
     except FileNotFoundError:
         return set()
 
-def end():
+#*args for linux compatibility
+def end(*args):
     main_logger.info('Exiting....')
 
     for conv_file in CONVERT_CACHE.values():
