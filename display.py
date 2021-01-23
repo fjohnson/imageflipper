@@ -556,9 +556,9 @@ def run():
                 continue
             idle()
 
-#This is a surface that can be drawn to like a regular Surface but changes will eventually be seen on the monitor.
-#screen = display.set_mode((0,0), pygame.FULLSCREEN)
-screen = display.set_mode((1024,768))
+
+screen = display.set_mode((0,0), pygame.FULLSCREEN)
+#screen = display.set_mode()
 signal.signal(signal.SIGINT,end)
 run()
 #end()
