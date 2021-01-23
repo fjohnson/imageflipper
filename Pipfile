@@ -8,6 +8,5 @@ verify_ssl = true
 [packages]
 pillow = "*"
 pygame = "*"
+requests = "*"
 
-[requires]
-python_version = "3.7"
