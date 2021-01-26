@@ -63,7 +63,6 @@ MOUSE_RIGHT = 3
 RESULTS_PER_PAGE = 10 # must be between 1-10
 CHUNK_SIZE = 8192
 GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?{}"
-SEARCH_TERMS = {'banana'}
 SEARCH_ENGINE_ID = '007957652027458452999:nm6b9xle5se'
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.110 Safari/537.36'
 #with open("apikey") as apikey_file:
@@ -115,9 +114,9 @@ def assemble_query(query, img_size, index=1):
     }
     return GOOGLE_API_URL.format(urllib.parse.urlencode(parameters))
 
-def assemble_images():
+def assemble_images(search_terms):
     images = set()
-    for term in SEARCH_TERMS:
+    for term in search_terms:
         img_dir = os.path.join(IMAGE_DIR, term)
 
         if not os.path.exists(img_dir):
@@ -396,7 +395,7 @@ def search_term_download():
     term_dict = {}
     total_urls = 0
 
-    for term in SEARCH_TERMS:
+    for term in SearchTermServer.search_terms:
         term_dict[term] = search_for_images(term, IMAGE_SIZES)
         total_urls += len(term_dict[term])
 
@@ -415,7 +414,7 @@ class ImageDownloader(threading.Thread):
             search_term_download()
             self.init_load_event = True
             SearchTermServer.new_term_event.wait(IMAGES_DOWNLOAD_INTERVAL)
-            print('woke up id')
+            main_logger.info('image downloader woke up')
 
 def check_for_exit():
     for e in pygame.event.get():
@@ -505,7 +504,7 @@ def end(*args):
         blacklist.writelines('\n'.join(IMAGE_BLACKLIST))
 
     with open(SEARCH_TERM_FILENAME, 'w') as saved_term_file:
-        saved_term_file.writelines('\n'.join(SEARCH_TERMS))
+        saved_term_file.writelines('\n'.join(SearchTermServer.search_terms))
 
     try:
         with open("qc.pickle",'wb') as qc_pickle_file:
@@ -518,36 +517,30 @@ def end(*args):
     sys.exit(0)
 
 def run():
-    global SEARCH_TERMS
     global IMAGES
-
-    SEARCH_TERMS = get_saved_terms()
+    saved_terms = get_saved_terms()
 
     if not os.path.exists(IMAGE_DIR):
         os.mkdir(IMAGE_DIR)
 
-    IMAGES = assemble_images()
+    IMAGES = assemble_images(saved_terms)
+
+    search_term_server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_LOCK, search_terms=saved_terms)
+    search_term_server.start()
 
     ImageCleaner().start()
     id = ImageDownloader()
     id.start()
     display_loading(id)
 
-    search_term_server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_LOCK, search_terms=SEARCH_TERMS)
-    search_term_server.start()
-
     while True:
-        SEARCH_TERMS = search_term_server.search_terms
-        main_logger.info("Search Terms: {}".format(SEARCH_TERMS))
 
         IMAGES_LOCK.acquire()
         images = set(IMAGES)
         IMAGES_LOCK.release()
 
-        #No images, so wait until next download time.
         if not images:
-            search_term_server.new_term_event.wait(IMAGES_DOWNLOAD_INTERVAL)
-            print("woke up run()")
+            idle()
 
         for image in images:
             try:
