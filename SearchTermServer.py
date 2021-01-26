@@ -48,10 +48,10 @@ class SearchTermServer(threading.Thread):
 
         for img_file in list(SearchTermServer.images_set):
             if current_time - os.stat(img_file).st_mtime >= days_30:
-                os.unlink(img_file)
                 SearchTermServer.image_lock.acquire()
                 SearchTermServer.images_set.remove(img_file)
                 SearchTermServer.image_lock.release()
+                os.unlink(img_file)
 
     @staticmethod
     def image_space_taken():

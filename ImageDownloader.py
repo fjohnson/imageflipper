@@ -18,9 +18,5 @@ class ImageDownloader(threading.Thread):
 
         while True:
             self.search_term_download()
-            if self.image_set:
-                self.display_images = True
-            else:
-                self.display_images = False
-                SearchTermServer.new_term_event.wait(self.image_download_interval)
-                self.logger.info('image downloader woke up')
+            SearchTermServer.new_term_event.wait(self.image_download_interval)
+            self.logger.info('image downloader woke up')

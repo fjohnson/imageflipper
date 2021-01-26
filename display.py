@@ -415,23 +415,30 @@ def check_for_exit():
                 end()
 
 
-def display_loading(id):
-        gifs = os.listdir(LOAD_IMAGE_DIR)
-        loading_gif = GIFImage(os.path.join(LOAD_IMAGE_DIR, random.choice(gifs)))
+def display_loading():
+    '''Loading screen that displays if less than 10 images are available'''
 
-        x_coord = get_center_width_offset(loading_gif.image)
-        y_coord = get_center_height_offset(loading_gif.image)
+    gifs = os.listdir(LOAD_IMAGE_DIR)
+    loading_gif = GIFImage(os.path.join(LOAD_IMAGE_DIR, random.choice(gifs)))
 
-        while True:
+    x_coord = get_center_width_offset(loading_gif.image)
+    y_coord = get_center_height_offset(loading_gif.image)
 
-            SCREEN_LOCK.acquire()
-            loading_gif.render(screen, (x_coord,y_coord))
-            display.flip()
-            SCREEN_LOCK.release()
+    while True:
 
-            if id.display_images: return
+        SCREEN_LOCK.acquire()
+        loading_gif.render(screen, (x_coord,y_coord))
+        display.flip()
+        SCREEN_LOCK.release()
 
-            check_for_exit()
+        check_for_exit()
+
+        IMAGES_LOCK.acquire()
+        if len(IMAGES) >= 10:
+            IMAGES_LOCK.release()
+            return
+        IMAGES_LOCK.release()
+
 
 def idle():
     start = datetime.datetime.now()
@@ -480,12 +487,13 @@ def run():
 
     while True:
 
-        if not id.display_images or not IMAGES:
-            display_loading(id)
-
         IMAGES_LOCK.acquire()
         images = set(IMAGES)
         IMAGES_LOCK.release()
+
+        #wait for 10 images to load before displaying
+        if len(images) < 10:
+            display_loading()
 
         for image in images:
             try:
@@ -495,8 +503,7 @@ def run():
             idle()
 
 
-
 screen = display.set_mode((0,0), pygame.FULLSCREEN)
 signal.signal(signal.SIGINT,end)
 run()
-#end()
+
