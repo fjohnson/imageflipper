@@ -9,12 +9,12 @@ class SearchTermServer(threading.Thread):
 
     search_terms = set()
     image_directory = None
-    images_being_displayed = None
+    images_set = None
     image_lock = None
     logger = None
     new_term_event = threading.Event()
 
-    def __init__(self, image_dir, display_image_set, image_lock, daemon=True, search_terms=None):
+    def __init__(self, image_dir, image_set, image_lock, daemon=True, search_terms=None):
         super(self.__class__, self).__init__()
         self.daemon = daemon
         self.host = "localhost"
@@ -28,7 +28,7 @@ class SearchTermServer(threading.Thread):
             SearchTermServer.search_terms = search_terms
 
         SearchTermServer.image_directory = image_dir
-        SearchTermServer.images_being_displayed = display_image_set
+        SearchTermServer.images_set = image_set
         SearchTermServer.image_lock = image_lock
 
     def run(self):
@@ -46,11 +46,11 @@ class SearchTermServer(threading.Thread):
         days_30 = 60*60*24*30
         current_time = time.time()
 
-        for img_file in list(SearchTermServer.images_being_displayed):
+        for img_file in list(SearchTermServer.images_set):
             if current_time - os.stat(img_file).st_mtime >= days_30:
                 os.unlink(img_file)
                 SearchTermServer.image_lock.acquire()
-                SearchTermServer.images_being_displayed.remove(img_file)
+                SearchTermServer.images_set.remove(img_file)
                 SearchTermServer.image_lock.release()
 
     @staticmethod

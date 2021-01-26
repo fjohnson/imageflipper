@@ -14,6 +14,9 @@ import pickle
 from GIFImage import GIFImage
 from pygame import display, image, Rect
 from PIL import Image
+
+from ImageCleaner import ImageCleaner
+from ImageDownloader import ImageDownloader
 from server import SearchTermServer
 
 formatter = logging.Formatter(fmt='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
@@ -68,7 +71,6 @@ USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 #    API_KEY = apikey_file.readline()
 API_KEY = "AIzaSyAtLp1P49VQbGO33Lxie4Un-ZaLLEhvOhw"
 
-IMAGES = set()
 IMAGES_LOCK = threading.Lock()
 IMAGES_DOWNLOAD_INTERVAL = 60 * 60 * 10
 IMAGE_FLIP_FREQUENCY = 5
@@ -113,6 +115,13 @@ def assemble_query(query, img_size, index=1):
     }
     return GOOGLE_API_URL.format(urllib.parse.urlencode(parameters))
 
+def get_saved_terms():
+    try:
+        with open(SEARCH_TERM_FILENAME) as saved_term_file:
+            return set(map(str.strip,saved_term_file.readlines()))
+    except FileNotFoundError:
+        return set()
+
 def assemble_images(search_terms):
     images = set()
     for term in search_terms:
@@ -126,6 +135,8 @@ def assemble_images(search_terms):
             images.add(img_full_path)
 
     return images
+
+IMAGES = assemble_images(get_saved_terms())
 
 def get_center_width_offset(pil_image):
     iwidth = pil_image.size[0]
@@ -364,13 +375,6 @@ def download_images(term_dict, total_urls):
 
                     IMAGE_BLACKLIST.add(url)
                     term_logger.info('Blacklisted url:{}'.format(url))
-                    # try:
-                    #     IMAGE_URL_ERRORS[url] += 1
-                    #     if IMAGE_URL_ERRORS[url] == IMAGE_URL_RETRY:
-                    #         IMAGE_BLACKLIST.add(url)
-                    #         term_logger.info('Blacklisted url:{}'.format(url))
-                    # except KeyError:
-                    #     IMAGE_URL_ERRORS[url] = 1
 
             if error and os.path.exists(filename):
                 os.unlink(filename)
@@ -400,23 +404,6 @@ def search_term_download():
 
     download_images(term_dict, total_urls)
     SearchTermServer.new_term_event.clear()
-
-class ImageDownloader(threading.Thread):
-    def __init__(self):
-        super(self.__class__, self).__init__()
-        self.daemon = True
-        self.display_images = False
-
-    def run(self):
-
-        while True:
-            search_term_download()
-            if IMAGES:
-                self.display_images = True
-            else:
-                self.display_images = False
-            SearchTermServer.new_term_event.wait(IMAGES_DOWNLOAD_INTERVAL)
-            main_logger.info('image downloader woke up')
 
 def check_for_exit():
     for e in pygame.event.get():
@@ -455,45 +442,6 @@ def idle():
         time.sleep(input_scan_rate)
         next_tick = datetime.datetime.now()
 
-class ImageCleaner(threading.Thread):
-
-    def __init__(self, daemon=True):
-        super(self.__class__, self).__init__()
-        self.daemon = True
-
-    def run(self):
-        global IMAGES
-
-        while True:
-            IMAGES_LOCK.acquire()
-            images = set(IMAGES)
-            IMAGES_LOCK.release()
-
-            erased_images = set()
-
-            for image in images:
-                age_seconds = os.stat(image).st_mtime
-                time_now = time.time()
-                if time_now - age_seconds > MAX_FILE_AGE:
-                    os.unlink(image)
-                    erased_images.add(image)
-
-            if erased_images:
-                main_logger.info("Erased images :{}".format(erased_images))
-
-            IMAGES_LOCK.acquire()
-            IMAGES = IMAGES - erased_images
-            IMAGES_LOCK.release()
-
-            time.sleep(IMAGE_CLEAN_INTERVAL)
-
-def get_saved_terms():
-    try:
-        with open(SEARCH_TERM_FILENAME) as saved_term_file:
-            return set(map(str.strip,saved_term_file.readlines()))
-    except FileNotFoundError:
-        return set()
-
 #*args for linux compatibility
 def end(*args):
     main_logger.info('Exiting....')
@@ -518,15 +466,11 @@ def end(*args):
     sys.exit(0)
 
 def run():
-    global IMAGES
-    saved_terms = get_saved_terms()
 
     if not os.path.exists(IMAGE_DIR):
         os.mkdir(IMAGE_DIR)
 
-    IMAGES = assemble_images(saved_terms)
-
-    search_term_server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_LOCK, search_terms=saved_terms)
+    search_term_server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_LOCK, search_terms=get_saved_terms())
     search_term_server.start()
 
     ImageCleaner().start()
@@ -535,7 +479,7 @@ def run():
 
     while True:
 
-        if not id.display_images:
+        if not id.display_images or not IMAGES:
             display_loading(id)
 
         IMAGES_LOCK.acquire()
