@@ -1,38 +1,42 @@
 import os
 import threading
 import time
-
-from display import IMAGES_LOCK, MAX_FILE_AGE, main_logger, IMAGE_CLEAN_INTERVAL, IMAGES
+import logging
 
 
 class ImageCleaner(threading.Thread):
 
-    def __init__(self, daemon=True):
+    def __init__(self, image_lock, image_set, max_file_age, image_clean_interval):
         super(self.__class__, self).__init__()
         self.daemon = True
+        self.logger = logging.getLogger('main_logger')
+        self.images_lock = image_lock
+        self.image_set = image_set
+        self.image_clean_interval = image_clean_interval
+        self.max_file_age = max_file_age
 
     def run(self):
 
         while True:
-            IMAGES_LOCK.acquire()
-            images = set(IMAGES)
-            IMAGES_LOCK.release()
+            self.images_lock.acquire()
+            images = set(self.image_set)
+            self.images_lock.release()
 
-            erased_images = set()
+            to_erase = set()
 
             for image in images:
                 age_seconds = os.stat(image).st_mtime
                 time_now = time.time()
-                if time_now - age_seconds > MAX_FILE_AGE:
-                    os.unlink(image)
-                    erased_images.add(image)
+                if time_now - age_seconds > self.max_file_age:
+                    to_erase.add(image)
 
-            if erased_images:
-                main_logger.info("Erased images :{}".format(erased_images))
+            for img in to_erase:
+                self.images_lock.acquire()
+                self.image_set.remove(img)
+                self.images_lock.release()
+                os.unlink(img)
 
-            IMAGES_LOCK.acquire()
-            for img in erased_images:
-                IMAGES.remove(img)
-            IMAGES_LOCK.release()
+            if to_erase:
+                self.logger.info("Erased images :{}".format(to_erase))
 
-            time.sleep(IMAGE_CLEAN_INTERVAL)
+            time.sleep(self.image_clean_interval)

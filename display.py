@@ -15,9 +15,10 @@ from GIFImage import GIFImage
 from pygame import display, image, Rect
 from PIL import Image
 
+
 from ImageCleaner import ImageCleaner
 from ImageDownloader import ImageDownloader
-from server import SearchTermServer
+from SearchTermServer import SearchTermServer
 
 formatter = logging.Formatter(fmt='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
 
@@ -473,8 +474,8 @@ def run():
     search_term_server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_LOCK, search_terms=get_saved_terms())
     search_term_server.start()
 
-    ImageCleaner().start()
-    id = ImageDownloader()
+    ImageCleaner(IMAGES_LOCK, IMAGES, MAX_FILE_AGE, IMAGE_CLEAN_INTERVAL).start()
+    id = ImageDownloader(IMAGES, IMAGES_DOWNLOAD_INTERVAL, search_term_download)
     id.start()
 
     while True:
@@ -492,6 +493,7 @@ def run():
             except IOError:
                 continue
             idle()
+
 
 
 screen = display.set_mode((0,0), pygame.FULLSCREEN)
