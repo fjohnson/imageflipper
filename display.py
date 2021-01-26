@@ -53,7 +53,6 @@ LOADING_FONT = pygame.font.Font(None, FONT_SIZE)
 LOADING_FONT_DETAILED = pygame.font.Font(None, int(FONT_SIZE / 2))
 DETAILED_PROGRESS = True
 TEXT_PADDING = 5 #px of padding for text
-
 RGB_BLACK = (0,0,0)
 MOUSE_LEFT = 1
 MOUSE_RIGHT = 3
@@ -406,13 +405,16 @@ class ImageDownloader(threading.Thread):
     def __init__(self):
         super(self.__class__, self).__init__()
         self.daemon = True
-        self.init_load_event = False
+        self.display_images = False
 
     def run(self):
 
         while True:
             search_term_download()
-            self.init_load_event = True
+            if IMAGES:
+                self.display_images = True
+            else:
+                self.display_images = False
             SearchTermServer.new_term_event.wait(IMAGES_DOWNLOAD_INTERVAL)
             main_logger.info('image downloader woke up')
 
@@ -439,8 +441,7 @@ def display_loading(id):
             display.flip()
             SCREEN_LOCK.release()
 
-            if id.init_load_event:
-                return
+            if id.display_images: return
 
             check_for_exit()
 
@@ -531,16 +532,15 @@ def run():
     ImageCleaner().start()
     id = ImageDownloader()
     id.start()
-    display_loading(id)
 
     while True:
+
+        if not id.display_images:
+            display_loading(id)
 
         IMAGES_LOCK.acquire()
         images = set(IMAGES)
         IMAGES_LOCK.release()
-
-        if not images:
-            time.sleep(1)
 
         for image in images:
             try:
@@ -551,7 +551,6 @@ def run():
 
 
 screen = display.set_mode((0,0), pygame.FULLSCREEN)
-#screen = display.set_mode()
 signal.signal(signal.SIGINT,end)
 run()
 #end()
