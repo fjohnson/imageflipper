@@ -540,7 +540,7 @@ def run():
         IMAGES_LOCK.release()
 
         if not images:
-            idle()
+            time.sleep(1)
 
         for image in images:
             try:
