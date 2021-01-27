@@ -1,66 +1,43 @@
-import socketserver
-import threading
-import os
-import time
-import shutil
 import logging
+import os
+import pprint
+import shutil
+import threading
 
-class SearchTermServer(threading.Thread):
+from socketserver import ThreadingTCPServer, StreamRequestHandler
+from ImageCleaner import ImageCleaner
 
-    search_terms = set()
-    image_directory = None
-    images_set = None
-    image_lock = None
-    logger = None
-    new_term_event = threading.Event()
+class SearchTermServer(ThreadingTCPServer):
+    def __init__(self, image_dir, image_set, image_lock, max_file_age, daemon=True, search_terms=None):
 
-    def __init__(self, image_dir, image_set, image_lock, daemon=True, search_terms=None):
-        super(self.__class__, self).__init__()
-        self.daemon = daemon
-        self.host = "localhost"
-        self.port = 9999
+        super().__init__(('localhost', 9999), TCPHandler, bind_and_activate=True)
+        self.image_directory = image_dir
+        self.max_file_age = max_file_age
+        self.search_terms = search_terms if search_terms else set()
+        self.logger = logging.getLogger("main_logger")
+        self.new_term_event = threading.Event()
 
-        SearchTermServer.logger = logging.getLogger("main_logger")
+        self.clean_event = threading.Event()
+        self.clean_result_event = threading.Event()
+        self.clean_msg_buffer = []
+        self.image_clean_interval = 60*60*24
+        self.image_cleaner = ImageCleaner(image_dir, image_lock, image_set, max_file_age, self.image_clean_interval, self.clean_event, self.clean_result_event, self.clean_msg_buffer)
+        self.image_cleaner.start()
 
-        if search_terms is None:
-            SearchTermServer.search_terms = {}
-        else:
-            SearchTermServer.search_terms = search_terms
+        self.welcome_msg = '''
+Add new search terms by entering in a term then a new line or a comma seperated list followed by a new line. Remove search terms by prefixing with a "-". Send ^exit to exit. \r\n
+Type "^space" to determine device space left. Type ^term to list search terms. Type "^clear" to erase images older than {} seconds. Type "^idea" to return image directory magnitude.'''.format(self.max_file_age)
 
-        SearchTermServer.image_directory = image_dir
-        SearchTermServer.images_set = image_set
-        SearchTermServer.image_lock = image_lock
-
-    def run(self):
-        server = socketserver.TCPServer((self.host, self.port), SearchTermServer.TCPHandler)
-        server.serve_forever()
-
-    @staticmethod
-    def check_space():
+    def check_space(self):
         return shutil.disk_usage("/")
 
-
-    @staticmethod
-    def clear_oldies():
-
-        days_30 = 60*60*24*30
-        current_time = time.time()
-
-        for img_file in list(SearchTermServer.images_set):
-            if current_time - os.stat(img_file).st_mtime >= days_30:
-                SearchTermServer.image_lock.acquire()
-                SearchTermServer.images_set.remove(img_file)
-                SearchTermServer.image_lock.release()
-                os.unlink(img_file)
-
-    @staticmethod
-    def image_space_taken():
+    def image_space_taken(self):
         total_size = 0
         megs = 1024*1024.0
         gigs = megs*1024
 
-        for search_term in os.listdir(SearchTermServer.image_directory):
-            search_term_img_dir = os.path.join(SearchTermServer.image_directory, search_term)
+        for search_term in os.listdir(self.image_directory):
+            search_term_img_dir = os.path.join(self.image_directory, search_term)
             if not os.path.isdir(search_term_img_dir):
                 continue
             for img_file in os.listdir(search_term_img_dir):
@@ -70,76 +47,78 @@ class SearchTermServer(threading.Thread):
 
         return total_size / megs, total_size / gigs
 
-    class TCPHandler(socketserver.StreamRequestHandler):
+    def format_delete_report(self, report):
+        items = []
+        days = 60*60*24
+        for item in sorted(report, key=lambda i: i.filename):
+            items.append("{}, mtime (days):{:.2f}, space:{:.2f}kb".format(item.filename, item.age/days, item.space/1024))
+        return '\r\n'.join(items)
 
-        def setup(self):
-            socketserver.StreamRequestHandler.setup(self)
-            self.welcome_msg = b'''
-Add new search terms by entering in a term then a new line or a comma seperated list followed by a new line. Remove search terms by prefixing with a "-". Send ^exit to exit. \r\n
-Type "^space" to determine device space left. Type ^term to list search terms. Type "^clear" to erase images older than 30 days. Type "^idea" to return image directory magnitude.\r\n\n'''
 
-        def handle(self):
-            SearchTermServer.logger.info("{} connected".format(self.client_address))
-            self.wfile.write(self.welcome_msg)
-            self.wfile.write(bytes("Search terms: {}\r\n:".format(SearchTermServer.search_terms), 'utf-8'))
+    def clear_oldies(self):
+        self.clean_event.set()
+        self.clean_result_event.wait()
+        self.clean_result_event.clear()
 
-            terms_copy = set(SearchTermServer.search_terms)
-            self.data = self.rfile.readline().strip().decode('utf-8')
+        if self.clean_msg_buffer:
+            return self.format_delete_report(self.clean_msg_buffer.pop())
+
+class TCPHandler(StreamRequestHandler):
+
+    def send_response(self, str):
+        self.wfile.write(bytes("{}\r\n".format(str),'utf8'))
+
+    def handle(self):
+        self.server.logger.info("{} connected".format(self.client_address))
+        self.send_response(self.server.welcome_msg)
+        self.send_response("Search terms: {}".format(self.server.search_terms))
+        self.wfile.write(b"\r\n:")
+
+        terms_copy = set(self.server.search_terms)
+        self.data = self.rfile.readline().strip().decode('utf-8')
+
+        added_or_removed = False
+        while self.data != "^exit":
+            user_terms = map(str.strip, self.data.split(','))
+
+            for term in user_terms:
+                if term.startswith("-"):
+                    try:
+                        terms_copy.remove(term[1:])
+                        added_or_removed = True
+                    except KeyError:
+                        pass
+                elif term == "^space":
+                    total, used, free = self.server.check_space()
+                    self.send_response("Total {} Used {} Free {}".format(total, used, free))
+                elif term == "^clear":
+                    self.wfile.write(b"Wait...")
+                    self.send_response(self.server.clear_oldies())
+                elif term == "^idea":
+                    self.wfile.write(b"Calculating... ")
+                    megs, gigs = self.server.image_space_taken()
+                    self.send_response("Space used: {}G {}M".format(gigs, megs))
+                elif term == "^term":
+                    self.send_response(self.server.search_terms)
+                elif term:
+                    terms_copy.add(term)
+                    added_or_removed = True
+
+            if added_or_removed == True:
+                self.server.search_terms = terms_copy
+                self.server.new_term_event.set()
+                self.send_response(self.server.search_terms)
 
             added_or_removed = False
-            while self.data != "^exit":
-                user_terms = map(str.strip, self.data.split(','))
+            self.wfile.write(bytes(":", 'utf-8'))
+            self.data = self.rfile.readline().strip().decode('utf-8')
 
-                for term in user_terms:
-                    if term.startswith("-"):
-                        try:
-                            terms_copy.remove(term[1:])
-                            added_or_removed = True
-                        except KeyError:
-                            pass
-                    elif term == "^space":
-                        try:
-                            total, used, free = SearchTermServer.check_space()
-                            ss_str = "Total {} Used {} Free {}\r\n".format(total, used, free)
-                            self.wfile.write(ss_str.encode('utf-8'))
-                        except IOError as e:
-                            self.wfile.write(bytes(" ERROR: {}\r\n".format(e), 'utf-8'))
-                            SearchTermServer.logger.info(" ERROR: {}\r\n".format(e))
-                    elif term == "^clear":
-                        self.wfile.write(b"Wait...")
-                        try:
-                            SearchTermServer.clear_oldies()
-                            self.wfile.write(b" Ok Done *_*.\r\n")
-                        except IOError as e:
-                            self.wfile.write(bytes(" ERROR: {}\r\n".format(e), 'utf-8'))
-                            SearchTermServer.logger.info(" ERROR: {}\r\n".format(e))
-                    elif term == "^idea":
-                        self.wfile.write(b"Calculating... ")
-                        try:
-                            megs, gigs = SearchTermServer.image_space_taken()
-                            self.wfile.write(bytes("Space used: {}G {}M\r\n".format(gigs, megs), 'utf-8'))
-                        except IOError as e:
-                            self.wfile.write(bytes(" ERROR: {}\r\n".format(e), 'utf-8'))
-                            SearchTermServer.logger.info(" ERROR: {}\r\n".format(e))
-                    elif term == "^term":
-                        self.wfile.write(bytes("{}\r\n".format(SearchTermServer.search_terms), 'utf-8'))
-                    elif term:
-                        terms_copy.add(term)
-                        added_or_removed = True
-
-                if added_or_removed == True:
-                    SearchTermServer.search_terms = terms_copy
-                    SearchTermServer.new_term_event.set()
-                    self.wfile.write(bytes("{}\r\n".format(SearchTermServer.search_terms), 'utf-8'))
-
-                added_or_removed = False
-                self.wfile.write(bytes(":", 'utf-8'))
-                self.data = self.rfile.readline().strip().decode('utf-8')
-
-            self.wfile.write(b"Good bye.\r\n")
+        self.wfile.write(b"Good bye.\r\n")
 
 if __name__ == '__main__':
-    imgdir = 'C:\\Users\\fjohnson\\Desktop\\imageflipper-master\\images'
-    display_img_set = set()
-    lock_event = threading.Event()
-    SearchTermServer(imgdir, display_img_set, lock_event, daemon=False).start()
+    CODE_DIR = os.path.dirname(__file__)
+    IMAGE_DIR = os.path.join(CODE_DIR, "images")
+    image_set = set()
+    image_lock = threading.Lock()
+    MAX_FILE_AGE = 60 * 60 * 24 * 90
+    SearchTermServer(IMAGE_DIR, image_set, image_lock, MAX_FILE_AGE).serve_forever()

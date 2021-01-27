@@ -11,12 +11,10 @@ import sys
 import requests
 import logging
 import pickle
+
 from GIFImage import GIFImage
 from pygame import display, image, Rect
 from PIL import Image
-
-
-from ImageCleaner import ImageCleaner
 from ImageDownloader import ImageDownloader
 from SearchTermServer import SearchTermServer
 
@@ -50,6 +48,8 @@ display.init()
 highest_res = display.list_modes()[0]
 SCREEN_WIDTH = highest_res[0]
 SCREEN_HEIGHT = highest_res[1]
+#SCREEN_WIDTH = 1024
+#SCREEN_HEIGHT = 768
 IMAGE_SIZE = (SCREEN_WIDTH, SCREEN_HEIGHT)
 FONT_SIZE = 48
 FONT_COLOR = (255,255,0)
@@ -64,6 +64,7 @@ MOUSE_RIGHT = 3
 #API only returns 100 pages of results. To get the maximum return, specify
 #the max number of results per page which is 10
 RESULTS_PER_PAGE = 10 # must be between 1-10
+LOADING_PAGE_THRESHOLD = RESULTS_PER_PAGE
 CHUNK_SIZE = 8192
 GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?{}"
 SEARCH_ENGINE_ID = '007957652027458452999:nm6b9xle5se'
@@ -84,7 +85,6 @@ IMAGE_BLACKLIST_FILENAME = os.path.join(CODE_DIR,"urlblacklist")
 
 SEARCH_TERM_FILENAME = os.path.join(CODE_DIR,'search_terms')
 MAX_FILE_AGE = 60 * 60 * 24 * 90 # 90 days
-IMAGE_CLEAN_INTERVAL = 60*60*24
 
 try:
     with open("qc.pickle", "rb") as qc_pickle_file:
@@ -138,6 +138,7 @@ def assemble_images(search_terms):
     return images
 
 IMAGES = assemble_images(get_saved_terms())
+server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_LOCK, MAX_FILE_AGE, search_terms=get_saved_terms())
 
 def get_center_width_offset(pil_image):
     iwidth = pil_image.size[0]
@@ -399,12 +400,12 @@ def search_term_download():
     term_dict = {}
     total_urls = 0
 
-    for term in SearchTermServer.search_terms:
+    for term in server.search_terms:
         term_dict[term] = search_for_images(term, IMAGE_SIZES)
         total_urls += len(term_dict[term])
 
     download_images(term_dict, total_urls)
-    SearchTermServer.new_term_event.clear()
+    server.new_term_event.clear()
 
 def check_for_exit():
     for e in pygame.event.get():
@@ -424,6 +425,8 @@ def display_loading():
     x_coord = get_center_width_offset(loading_gif.image)
     y_coord = get_center_height_offset(loading_gif.image)
 
+    screen.fill(RGB_BLACK)
+
     while True:
 
         SCREEN_LOCK.acquire()
@@ -434,7 +437,7 @@ def display_loading():
         check_for_exit()
 
         IMAGES_LOCK.acquire()
-        if len(IMAGES) >= 10:
+        if len(IMAGES) >= LOADING_PAGE_THRESHOLD:
             IMAGES_LOCK.release()
             return
         IMAGES_LOCK.release()
@@ -461,7 +464,7 @@ def end(*args):
         blacklist.writelines('\n'.join(IMAGE_BLACKLIST))
 
     with open(SEARCH_TERM_FILENAME, 'w') as saved_term_file:
-        saved_term_file.writelines('\n'.join(SearchTermServer.search_terms))
+        saved_term_file.writelines('\n'.join(server.search_terms))
 
     try:
         with open("qc.pickle",'wb') as qc_pickle_file:
@@ -469,6 +472,7 @@ def end(*args):
     except (pickle.PickleError, pickle.PicklingError) as e:
         main_logger.info('Failed to pickle query cache: {}'.format(e))
 
+    server.shutdown()
     pygame.display.quit()
     pygame.quit()
     sys.exit(0)
@@ -478,12 +482,8 @@ def run():
     if not os.path.exists(IMAGE_DIR):
         os.mkdir(IMAGE_DIR)
 
-    search_term_server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_LOCK, search_terms=get_saved_terms())
-    search_term_server.start()
-
-    ImageCleaner(IMAGES_LOCK, IMAGES, MAX_FILE_AGE, IMAGE_CLEAN_INTERVAL).start()
-    id = ImageDownloader(IMAGES, IMAGES_DOWNLOAD_INTERVAL, search_term_download)
-    id.start()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    ImageDownloader(IMAGES, IMAGES_DOWNLOAD_INTERVAL, search_term_download, server).start()
 
     while True:
 
@@ -491,8 +491,7 @@ def run():
         images = set(IMAGES)
         IMAGES_LOCK.release()
 
-        #wait for 10 images to load before displaying
-        if len(images) < 10:
+        if len(images) < LOADING_PAGE_THRESHOLD:
             display_loading()
 
         for image in images:
@@ -504,6 +503,7 @@ def run():
 
 
 screen = display.set_mode((0,0), pygame.FULLSCREEN)
+#screen = display.set_mode(IMAGE_SIZE)
 signal.signal(signal.SIGINT,end)
 run()
 
