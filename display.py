@@ -491,6 +491,7 @@ def run():
         images = set(IMAGES)
         IMAGES_LOCK.release()
 
+
         if len(images) < LOADING_PAGE_THRESHOLD:
             display_loading()
 
@@ -502,7 +503,7 @@ def run():
             idle()
 
 
-screen = display.set_mode((0,0), pygame.FULLSCREEN)
+screen = display.set_mode(IMAGE_SIZE, pygame.FULLSCREEN)
 #screen = display.set_mode(IMAGE_SIZE)
 signal.signal(signal.SIGINT,end)
 run()
