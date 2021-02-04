@@ -10,20 +10,22 @@ from config import vars, TYPE_RESOLUTION
 
 
 class SearchTermServer(ThreadingTCPServer):
-    def __init__(self, image_dir, image_set, image_lock, max_file_age, daemon=True, search_terms=None):
+    def __init__(self, image_dir, image_set, image_lock, max_file_age, refresh_event, daemon=True):
 
         super().__init__(('localhost', 9999), TCPHandler, bind_and_activate=True)
         self.image_directory = image_dir
         self.max_file_age = max_file_age
-        self.search_terms = search_terms if search_terms else set()
         self.logger = logging.getLogger("main_logger")
         self.new_term_event = threading.Event()
-
+        self.images = image_set
+        self.image_lock = image_lock
+        self.refresh_event = refresh_event
         self.clean_event = threading.Event()
         self.clean_result_event = threading.Event()
         self.clean_msg_buffer = []
         self.image_clean_interval = 60*60*24
-        self.image_cleaner = ImageCleaner(image_dir, image_lock, image_set, max_file_age, self.image_clean_interval, self.clean_event, self.clean_result_event, self.clean_msg_buffer)
+        self.image_cleaner = ImageCleaner(image_dir, image_lock, image_set, max_file_age, self.image_clean_interval,
+                                          self.clean_event, self.clean_result_event, self.clean_msg_buffer, self.refresh_event)
         self.image_cleaner.start()
 
         self.welcome_msg = '''Hello. Type ^commands for a list of commands'''
@@ -73,6 +75,39 @@ class SearchTermServer(ThreadingTCPServer):
         if self.clean_msg_buffer:
             return self.format_delete_report(self.clean_msg_buffer.pop())
 
+    def add_extra_images(self, data):
+        tokens = data.split(",")
+        extra_imgs = set(vars['extra_images'])
+        to_remove = set()
+        to_add = set()
+
+        for t in tokens:
+            t = t.strip()
+            try:
+                imgs = os.listdir(os.path.join(self.image_directory, t))
+            except FileNotFoundError:
+                continue
+
+            if t.startswith('-'):
+                t = t[1:]
+                try:
+                    extra_imgs.remove(t)
+                except KeyError:
+                    continue
+                to_remove.update(imgs)
+            else:
+                extra_imgs.add(t)
+                to_add.update(imgs)
+
+        self.image_lock.acquire()
+        for i in self.images & to_remove:
+            self.images.remove(i)
+        self.images.update(to_add)
+        self.image_lock.release()
+        vars['extra_imgs'] = extra_imgs
+        self.refresh_event.set()
+
+        return extra_imgs
 class TCPHandler(StreamRequestHandler):
 
     def send_response(self, str):
@@ -110,14 +145,16 @@ class TCPHandler(StreamRequestHandler):
                 megs, gigs = self.server.image_space_taken()
                 self.send_response("Space used: {:.2f}G {:.2f}M".format(gigs, megs))
             elif self.data == "^term":
-                self.send_response(self.server.search_terms)
+                self.send_response(vars['search_terms'])
+            elif self.data == "^extra":
+                self.send_response(pprint.pformat(self.server.add_extra_images()))
             elif self.data == "^download":
                 # trigger a download event
                 self.server.new_term_event.set()
             elif self.data =="^commands":
                 self.send_response(pprint.pformat(self.server.commands))
             else:
-                terms_copy = set(self.server.search_terms)
+                terms_copy = set(vars['search_terms'])
                 added_or_removed = False
                 user_terms = map(str.strip, self.data.split(','))
 
@@ -133,9 +170,9 @@ class TCPHandler(StreamRequestHandler):
                         added_or_removed = True
 
                 if added_or_removed == True:
-                    self.server.search_terms = terms_copy
+                    vars['search_terms'] = terms_copy
                     self.server.new_term_event.set()
-                    self.send_response(self.server.search_terms)
+                    self.send_response(terms_copy)
 
             self.wfile.write(bytes(":", 'utf-8'))
             self.data = self.rfile.readline().strip().decode('utf-8')
@@ -143,7 +180,7 @@ class TCPHandler(StreamRequestHandler):
     def handle(self):
         self.server.logger.info("{} connected".format(self.client_address))
         self.send_response(self.server.welcome_msg)
-        self.send_response("Search terms: {}".format(self.server.search_terms))
+        self.send_response("Search terms: {}".format(vars['search_terms']))
         self.wfile.write(b"\n:")
 
         self.data = self.rfile.readline().strip().decode('utf-8')

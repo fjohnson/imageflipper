@@ -7,7 +7,7 @@ from collections import namedtuple
 
 class ImageCleaner(threading.Thread):
 
-    def __init__(self, image_dir, image_lock, image_set, max_file_age, image_clean_interval, clean_event, clean_msg_event, clean_msg_buffer):
+    def __init__(self, image_dir, image_lock, image_set, max_file_age, image_clean_interval, clean_event, clean_msg_event, clean_msg_buffer, refresh_event):
         super(self.__class__, self).__init__()
         self.daemon = True
         self.logger = logging.getLogger('main_logger')
@@ -19,6 +19,7 @@ class ImageCleaner(threading.Thread):
         self.clean_event = clean_event
         self.clean_msg_event = clean_msg_event
         self.clean_msg_buffer = clean_msg_buffer
+        self.refresh_event = refresh_event
 
     def clean_up(self):
         to_delete = set()
@@ -39,6 +40,8 @@ class ImageCleaner(threading.Thread):
         for img in self.image_set & to_delete:
             self.image_set.remove(img)
         self.image_lock.release()
+
+        self.refresh_event.set()
 
         for img in to_delete:
             os.unlink(img)

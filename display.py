@@ -83,7 +83,6 @@ IMAGE_SIZES = [
 ]
 IMAGE_BLACKLIST_FILENAME = os.path.join(CODE_DIR,"urlblacklist")
 
-SEARCH_TERM_FILENAME = os.path.join(CODE_DIR,'search_terms')
 MAX_FILE_AGE = 60 * 60 * 24 * 90 # 90 days
 
 try:
@@ -116,16 +115,9 @@ def assemble_query(query, img_size, index=1):
     }
     return GOOGLE_API_URL.format(urllib.parse.urlencode(parameters))
 
-def get_saved_terms():
-    try:
-        with open(SEARCH_TERM_FILENAME) as saved_term_file:
-            return set(map(str.strip,saved_term_file.readlines()))
-    except FileNotFoundError:
-        return set()
-
-def assemble_images(search_terms):
+def assemble_images():
     images = set()
-    for term in search_terms:
+    for term in vars['search_terms'] + vars['extra_images']:
         img_dir = os.path.join(IMAGE_DIR, term)
 
         if not os.path.exists(img_dir):
@@ -137,8 +129,9 @@ def assemble_images(search_terms):
 
     return images
 
-IMAGES = assemble_images(get_saved_terms())
-server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_LOCK, MAX_FILE_AGE, search_terms=get_saved_terms())
+IMAGES = assemble_images()
+REFRESH_EVENT = threading.Event
+server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_LOCK, MAX_FILE_AGE, REFRESH_EVENT)
 
 def get_center_width_offset(pil_image):
     iwidth = pil_image.size[0]
@@ -400,7 +393,7 @@ def search_term_download():
     term_dict = {}
     total_urls = 0
 
-    for term in server.search_terms:
+    for term in vars['search_terms']:
         term_dict[term] = search_for_images(term, IMAGE_SIZES)
         total_urls += len(term_dict[term])
 
@@ -463,9 +456,6 @@ def end(*args):
     with open(IMAGE_BLACKLIST_FILENAME, 'w') as blacklist:
         blacklist.writelines('\n'.join(IMAGE_BLACKLIST))
 
-    with open(SEARCH_TERM_FILENAME, 'w') as saved_term_file:
-        saved_term_file.writelines('\n'.join(server.search_terms))
-
     try:
         with open("qc.pickle",'wb') as qc_pickle_file:
             pickle.dump(QUERY_CACHE, qc_pickle_file, pickle.DEFAULT_PROTOCOL)
@@ -502,6 +492,12 @@ def run():
             except IOError:
                 continue
             idle()
+
+            #reload the images to display because 1) ImageCleaner cleaned out images
+            #or 2) The server added/removed extra images to display ("extra_images")
+            if REFRESH_EVENT.is_set():
+                REFRESH_EVENT.clear()
+                break
 
 
 screen = display.set_mode(IMAGE_SIZE, pygame.FULLSCREEN)
