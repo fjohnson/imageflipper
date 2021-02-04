@@ -6,6 +6,8 @@ import threading
 
 from socketserver import ThreadingTCPServer, StreamRequestHandler
 from ImageCleaner import ImageCleaner
+from config import vars, TYPE_RESOLUTION
+
 
 class SearchTermServer(ThreadingTCPServer):
     def __init__(self, image_dir, image_set, image_lock, max_file_age, daemon=True, search_terms=None):
@@ -24,9 +26,17 @@ class SearchTermServer(ThreadingTCPServer):
         self.image_cleaner = ImageCleaner(image_dir, image_lock, image_set, max_file_age, self.image_clean_interval, self.clean_event, self.clean_result_event, self.clean_msg_buffer)
         self.image_cleaner.start()
 
-        self.welcome_msg = '''
-Add new search terms by entering in a term then a new line or a comma seperated list followed by a new line. Remove search terms by prefixing with a "-". Send ^exit to exit. \r\n
-Type "^space" to determine device space left. Type ^term to list search terms. Type "^clear" to erase images older than {} seconds. Type "^idea" to return image directory magnitude.'''.format(self.max_file_age)
+        self.welcome_msg = '''Hello. Type ^commands for a list of commands'''
+
+        self.commands = {"^exit": "Exit.",
+                         "^vars": "Modify runtime parameters. Syntax is: ^vars key:value key:value...",
+                         "^space": "Show device disk space",
+                         "^clear": "Force an image clean event",
+                         "^idea": "Show how much space is taken up my images",
+                         "^term": "Show search terms",
+                         "^download": "Trigger a download event",
+                         "Add/remove vars":"Syntax[-]term,...,[-]term."
+                         }
 
     def check_space(self):
         return shutil.disk_usage("/")
@@ -66,54 +76,79 @@ Type "^space" to determine device space left. Type ^term to list search terms. T
 class TCPHandler(StreamRequestHandler):
 
     def send_response(self, str):
-        self.wfile.write(bytes("{}\r\n".format(str),'utf8'))
+        self.wfile.write(bytes("{}\n".format(str),'utf8'))
+
+    def list_vars(self):
+        return pprint.pformat(vars)
+
+    def modify_vars(self, var_string):
+        keypairs_str = var_string.partition("^vars ")[-1].split(":")
+        parsed_vars = {}
+        i = 1
+        while i < len(keypairs_str):
+            k, v = keypairs_str[i - 1], keypairs_str[i]
+            parsed_vars[k] = TYPE_RESOLUTION.get(k,str)(v)
+            i = i + 1
+        vars.update(parsed_vars)
+        return self.list_vars()
+
+    def parse_response(self):
+        while self.data != "^exit":
+
+            if self.data.startswith("^vars"):
+                self.send_response(self.modify_vars(self.data))
+            elif self.data.startswith("^lvars"):
+                self.send_response(self.list_vars())
+            elif self.data == "^space":
+                total, used, free = self.server.check_space()
+                self.send_response("Total {} Used {} Free {}".format(total, used, free))
+            elif self.data == "^clear":
+                self.wfile.write(b"Wait...")
+                self.send_response(self.server.clear_oldies())
+            elif self.data == "^idea":
+                self.wfile.write(b"Calculating... ")
+                megs, gigs = self.server.image_space_taken()
+                self.send_response("Space used: {:.2f}G {:.2f}M".format(gigs, megs))
+            elif self.data == "^term":
+                self.send_response(self.server.search_terms)
+            elif self.data == "^download":
+                # trigger a download event
+                self.server.new_term_event.set()
+            elif self.data =="^commands":
+                self.send_response(pprint.pformat(self.server.commands))
+            else:
+                terms_copy = set(self.server.search_terms)
+                added_or_removed = False
+                user_terms = map(str.strip, self.data.split(','))
+
+                for term in user_terms:
+                    if term.startswith("-"):
+                        try:
+                            terms_copy.remove(term[1:])
+                            added_or_removed = True
+                        except KeyError:
+                            pass
+                    else:
+                        terms_copy.add(term)
+                        added_or_removed = True
+
+                if added_or_removed == True:
+                    self.server.search_terms = terms_copy
+                    self.server.new_term_event.set()
+                    self.send_response(self.server.search_terms)
+
+            self.wfile.write(bytes(":", 'utf-8'))
+            self.data = self.rfile.readline().strip().decode('utf-8')
 
     def handle(self):
         self.server.logger.info("{} connected".format(self.client_address))
         self.send_response(self.server.welcome_msg)
         self.send_response("Search terms: {}".format(self.server.search_terms))
-        self.wfile.write(b"\r\n:")
+        self.wfile.write(b"\n:")
 
-        terms_copy = set(self.server.search_terms)
         self.data = self.rfile.readline().strip().decode('utf-8')
-
-        added_or_removed = False
-        while self.data != "^exit":
-            user_terms = map(str.strip, self.data.split(','))
-
-            for term in user_terms:
-                if term.startswith("-"):
-                    try:
-                        terms_copy.remove(term[1:])
-                        added_or_removed = True
-                    except KeyError:
-                        pass
-                elif term == "^space":
-                    total, used, free = self.server.check_space()
-                    self.send_response("Total {} Used {} Free {}".format(total, used, free))
-                elif term == "^clear":
-                    self.wfile.write(b"Wait...")
-                    self.send_response(self.server.clear_oldies())
-                elif term == "^idea":
-                    self.wfile.write(b"Calculating... ")
-                    megs, gigs = self.server.image_space_taken()
-                    self.send_response("Space used: {}G {}M".format(gigs, megs))
-                elif term == "^term":
-                    self.send_response(self.server.search_terms)
-                elif term:
-                    terms_copy.add(term)
-                    added_or_removed = True
-
-            if added_or_removed == True:
-                self.server.search_terms = terms_copy
-                self.server.new_term_event.set()
-                self.send_response(self.server.search_terms)
-
-            added_or_removed = False
-            self.wfile.write(bytes(":", 'utf-8'))
-            self.data = self.rfile.readline().strip().decode('utf-8')
-
-        self.wfile.write(b"Good bye.\r\n")
+        self.parse_response()
+        self.send_response("Good bye.")
 
 if __name__ == '__main__':
     CODE_DIR = os.path.dirname(__file__)

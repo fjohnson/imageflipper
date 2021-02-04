@@ -12,11 +12,13 @@ import requests
 import logging
 import pickle
 
+import config
 from GIFImage import GIFImage
 from pygame import display, image, Rect
 from PIL import Image
 from ImageDownloader import ImageDownloader
 from SearchTermServer import SearchTermServer
+from config import vars
 
 formatter = logging.Formatter(fmt='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
 
@@ -74,8 +76,6 @@ USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 API_KEY = "AIzaSyAtLp1P49VQbGO33Lxie4Un-ZaLLEhvOhw"
 
 IMAGES_LOCK = threading.Lock()
-IMAGES_DOWNLOAD_INTERVAL = 60 * 60 * 10
-IMAGE_FLIP_FREQUENCY = 5
 IMAGE_SIZES = [
     'xlarge',
     'xxlarge',
@@ -448,7 +448,7 @@ def idle():
     next_tick = datetime.datetime.now()
     input_scan_rate = .1 # sec
 
-    while (next_tick - start).seconds < IMAGE_FLIP_FREQUENCY:
+    while (next_tick - start).seconds < vars['flip_frequency']:
         check_for_exit()
         time.sleep(input_scan_rate)
         next_tick = datetime.datetime.now()
@@ -472,6 +472,7 @@ def end(*args):
     except (pickle.PickleError, pickle.PicklingError) as e:
         main_logger.info('Failed to pickle query cache: {}'.format(e))
 
+    config.save_config()
     server.shutdown()
     pygame.display.quit()
     pygame.quit()
@@ -483,7 +484,7 @@ def run():
         os.mkdir(IMAGE_DIR)
 
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    ImageDownloader(IMAGES, IMAGES_DOWNLOAD_INTERVAL, search_term_download, server).start()
+    ImageDownloader(IMAGES, search_term_download, server).start()
 
     while True:
 
