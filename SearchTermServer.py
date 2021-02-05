@@ -126,7 +126,7 @@ class SearchTermServer(ThreadingTCPServer):
         self.images.update(to_add)
         self.image_lock.release()
 
-        vars['extra_images'] = list(extra_imgs)
+        vars['extra_images'] = extra_imgs
         if to_remove or to_add:
             self.refresh_event.set()
 

@@ -11,5 +11,7 @@ TYPE_RESOLUTION = {'image_download_interval': int,
                    'results_per_page': int}
 
 def save_config():
+    vars['search_terms'] = list(vars['search_terms'])
+    vars['extra_images'] = list(vars['extra_images'])
     with open('config.json','w') as f:
         json.dump(vars, f, indent=1)
