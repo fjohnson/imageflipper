@@ -37,11 +37,30 @@ class SearchTermServer(ThreadingTCPServer):
                          "^idea": "Show how much space is taken up my images",
                          "^term": "Show search terms",
                          "^download": "Trigger a download event",
+                         "^existing": "List existing image dirs",
+                         "^extra": "Display existing images. Syntax: ^extra [-]term,...[-]term",
                          "Add/remove vars":"Syntax[-]term,...,[-]term."
                          }
 
     def check_space(self):
-        return shutil.disk_usage("/")
+        megs = 1024*1024*1024.0
+        gigs = megs*1024
+        total, used, free = shutil.disk_usage("/")
+        total = "{:.2f}G".format(total / gigs)
+        used = used / megs
+        free = free / megs
+
+        if used > 1024:
+            used = "{:.2f}G".format(used / 1024)
+        else:
+            used = "{:.2f}M".format(used)
+
+        if free > 1024:
+            free = "{:.2f}G".format(free / 1024)
+        else:
+            free = "{:.2f}M".format(free)
+
+        return total, used, free
 
     def image_space_taken(self):
         total_size = 0
@@ -76,7 +95,7 @@ class SearchTermServer(ThreadingTCPServer):
             return self.format_delete_report(self.clean_msg_buffer.pop())
 
     def add_extra_images(self, data):
-        tokens = data.split(",")
+        tokens = data.partition("^extra")[-1].split(",")
         extra_imgs = set(vars['extra_images'])
         to_remove = set()
         to_add = set()
@@ -84,7 +103,9 @@ class SearchTermServer(ThreadingTCPServer):
         for t in tokens:
             t = t.strip()
             try:
-                imgs = os.listdir(os.path.join(self.image_directory, t))
+                term_dir = os.path.join(self.image_directory, t[1:] if t.startswith('-') else t)
+                imgs = os.listdir(term_dir)
+                imgs = map(lambda img: os.path.join(term_dir, img), imgs)
             except FileNotFoundError:
                 continue
 
@@ -104,10 +125,14 @@ class SearchTermServer(ThreadingTCPServer):
             self.images.remove(i)
         self.images.update(to_add)
         self.image_lock.release()
-        vars['extra_imgs'] = extra_imgs
-        self.refresh_event.set()
+
+        vars['extra_images'] = list(extra_imgs)
+        if to_remove or to_add:
+            self.refresh_event.set()
 
         return extra_imgs
+
+
 class TCPHandler(StreamRequestHandler):
 
     def send_response(self, str):
@@ -127,6 +152,10 @@ class TCPHandler(StreamRequestHandler):
         vars.update(parsed_vars)
         return self.list_vars()
 
+    def list_img_dirs(self):
+        terms = os.listdir(self.server.image_directory)
+        self.send_response(pprint.pformat(terms))
+
     def parse_response(self):
         while self.data != "^exit":
 
@@ -136,7 +165,7 @@ class TCPHandler(StreamRequestHandler):
                 self.send_response(self.list_vars())
             elif self.data == "^space":
                 total, used, free = self.server.check_space()
-                self.send_response("Total {} Used {} Free {}".format(total, used, free))
+                self.send_response("Total: {} Used: {} Free: {}".format(total, used, free))
             elif self.data == "^clear":
                 self.wfile.write(b"Wait...")
                 self.send_response(self.server.clear_oldies())
@@ -146,12 +175,14 @@ class TCPHandler(StreamRequestHandler):
                 self.send_response("Space used: {:.2f}G {:.2f}M".format(gigs, megs))
             elif self.data == "^term":
                 self.send_response(vars['search_terms'])
-            elif self.data == "^extra":
-                self.send_response(pprint.pformat(self.server.add_extra_images()))
+            elif self.data.startswith("^extra"):
+                self.send_response(pprint.pformat(self.server.add_extra_images(self.data)))
             elif self.data == "^download":
                 # trigger a download event
                 self.server.new_term_event.set()
-            elif self.data =="^commands":
+            elif self.data == "^existing":
+                self.list_img_dirs()
+            elif self.data == "^commands":
                 self.send_response(pprint.pformat(self.server.commands))
             else:
                 terms_copy = set(vars['search_terms'])
@@ -192,5 +223,6 @@ if __name__ == '__main__':
     IMAGE_DIR = os.path.join(CODE_DIR, "images")
     image_set = set()
     image_lock = threading.Lock()
+    refresh_event = threading.Event()
     MAX_FILE_AGE = 60 * 60 * 24 * 90
-    SearchTermServer(IMAGE_DIR, image_set, image_lock, MAX_FILE_AGE).serve_forever()
+    SearchTermServer(IMAGE_DIR, image_set, image_lock, MAX_FILE_AGE, refresh_event).serve_forever()

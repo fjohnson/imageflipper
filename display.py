@@ -65,7 +65,7 @@ MOUSE_RIGHT = 3
 
 #API only returns 100 pages of results. To get the maximum return, specify
 #the max number of results per page which is 10
-RESULTS_PER_PAGE = 10 # must be between 1-10
+RESULTS_PER_PAGE = vars['results_per_page'] # must be between 1-10
 LOADING_PAGE_THRESHOLD = RESULTS_PER_PAGE
 CHUNK_SIZE = 8192
 GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?{}"
@@ -130,7 +130,7 @@ def assemble_images():
     return images
 
 IMAGES = assemble_images()
-REFRESH_EVENT = threading.Event
+REFRESH_EVENT = threading.Event()
 server = SearchTermServer(IMAGE_DIR, IMAGES, IMAGES_LOCK, MAX_FILE_AGE, REFRESH_EVENT)
 
 def get_center_width_offset(pil_image):

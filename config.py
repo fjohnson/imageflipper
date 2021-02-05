@@ -7,8 +7,9 @@ with open('config.json','r') as f:
 
 
 TYPE_RESOLUTION = {'image_download_interval': int,
-                   'flip_frequency': int}
+                   'flip_frequency': int,
+                   'results_per_page': int}
 
 def save_config():
     with open('config.json','w') as f:
-        json.dump(vars)
+        json.dump(vars, f, indent=1)
