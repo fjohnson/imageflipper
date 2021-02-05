@@ -17,6 +17,9 @@ class ImageDownloader(threading.Thread):
     def run(self):
 
         while True:
-            self.search_term_download()
+            try:
+                self.search_term_download()
+            except Exception as e:
+                self.logger.info(e)
             self.server.new_term_event.wait(vars['image_download_interval'])
             self.logger.info('image downloader woke up')

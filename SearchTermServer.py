@@ -38,6 +38,7 @@ class SearchTermServer(ThreadingTCPServer):
                          "^term": "Show search terms",
                          "^download": "Trigger a download event",
                          "^existing": "List existing image dirs",
+                         "^ring": "List images currently being displayed",
                          "^extra": "Display existing images. Syntax: ^extra [-]term,...[-]term",
                          "Add/remove vars":"Syntax[-]term,...,[-]term."
                          }
@@ -161,8 +162,6 @@ class TCPHandler(StreamRequestHandler):
 
             if self.data.startswith("^vars"):
                 self.send_response(self.modify_vars(self.data))
-            elif self.data.startswith("^lvars"):
-                self.send_response(self.list_vars())
             elif self.data == "^space":
                 total, used, free = self.server.check_space()
                 self.send_response("Total: {} Used: {} Free: {}".format(total, used, free))
@@ -180,6 +179,9 @@ class TCPHandler(StreamRequestHandler):
             elif self.data == "^download":
                 # trigger a download event
                 self.server.new_term_event.set()
+            elif self.data == "^ring":
+                current_displayed_images = pprint.pformat(self.server.images)
+                self.send_response(current_displayed_images)
             elif self.data == "^existing":
                 self.list_img_dirs()
             elif self.data == "^commands":
