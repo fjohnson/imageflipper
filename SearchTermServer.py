@@ -44,7 +44,7 @@ class SearchTermServer(ThreadingTCPServer):
                          }
 
     def check_space(self):
-        megs = 1024*1024*1024.0
+        megs = 1024*1024
         gigs = megs*1024
         total, used, free = shutil.disk_usage("/")
         total = "{:.2f}G".format(total / gigs)
