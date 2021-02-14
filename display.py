@@ -50,8 +50,8 @@ display.init()
 highest_res = display.list_modes()[0]
 SCREEN_WIDTH = highest_res[0]
 SCREEN_HEIGHT = highest_res[1]
-#SCREEN_WIDTH = 1024
-#SCREEN_HEIGHT = 768
+# SCREEN_WIDTH = 1024
+# SCREEN_HEIGHT = 768
 IMAGE_SIZE = (SCREEN_WIDTH, SCREEN_HEIGHT)
 FONT_SIZE = 48
 FONT_COLOR = (255,255,0)
@@ -82,8 +82,8 @@ IMAGE_SIZES = [
     'huge'
 ]
 IMAGE_BLACKLIST_FILENAME = os.path.join(CODE_DIR,"urlblacklist")
-
 MAX_FILE_AGE = 60 * 60 * 24 * 90 # 90 days
+SHOW_IMAGE_POSITION = False
 
 try:
     with open("qc.pickle", "rb") as qc_pickle_file:
@@ -124,6 +124,8 @@ def assemble_images():
             continue
 
         for img in os.listdir(img_dir):
+            if img.endswith('.log'):
+                continue
             img_full_path = os.path.join(img_dir, img)
             images.add(img_full_path)
 
@@ -180,7 +182,8 @@ def resize_image(pil_image):
     #Or we return an aspect ratio preserved enlarged image to screen size
     return pil_image.resize((new_width, new_height))
 
-def display_image(image_path):
+
+def display_image(image_path, image_index):
     pil_image,cache_hit = pil_image_convert(image_path)
 
     coordinate_x = get_center_width_offset(pil_image)
@@ -194,8 +197,16 @@ def display_image(image_path):
     SCREEN_LOCK.acquire()
     screen.fill(RGB_BLACK)
     screen.blit(surface_img, (coordinate_x, coordinate_y))
+    if SHOW_IMAGE_POSITION:
+        display_image_position(image_index)
     display.flip()
     SCREEN_LOCK.release()
+
+def display_image_position(image_index):
+    position = "{}/{}".format(image_index+1, len(IMAGES))
+    text = LOADING_FONT_DETAILED.render(position, 1, FONT_COLOR)
+    screen.blit(text, (0,0))
+
 
 def search_for_images(search_term, img_sizes, num_urls_desired=RESULTS_PER_PAGE):
 
@@ -345,6 +356,7 @@ def download_file(response, img, url):
 def download_images(term_dict, total_urls):
 
     urls_processed = 0
+    successful_downloads = 0
     for search_term in term_dict:
         term_logger = logger_store[search_term]
         search_images_dir = os.path.join(IMAGE_DIR, search_term)
@@ -363,6 +375,7 @@ def download_images(term_dict, total_urls):
                     IMAGES.add(filename)
                     IMAGES_LOCK.release()
                     term_logger.info("Downloaded {} {}".format(url, filename_hash))
+                    successful_downloads = successful_downloads + 1
                 except (urllib.error.HTTPError, urllib.error.URLError, AttributeError) as e:
                     error = True
                     main_logger.info(e)
@@ -377,7 +390,7 @@ def download_images(term_dict, total_urls):
 
             display_loading_progress(search_term, url_count, total_urls, urls_processed, i+1)
             urls_processed += 1
-
+    return successful_downloads
 
 def setup_term_logger(term):
     search_images_dir = os.path.join(IMAGE_DIR, term)
@@ -397,8 +410,11 @@ def search_term_download():
         term_dict[term] = search_for_images(term, IMAGE_SIZES)
         total_urls += len(term_dict[term])
 
-    download_images(term_dict, total_urls)
+    items_downloaded = download_images(term_dict, total_urls)
     server.new_term_event.clear()
+
+    if items_downloaded:
+        REFRESH_EVENT.set()
 
 def check_for_exit():
     for e in pygame.event.get():
@@ -436,13 +452,46 @@ def display_loading():
         IMAGES_LOCK.release()
 
 
-def idle():
+def scan_input():
+    '''
+    q - quits
+    d - initiate download event
+    arrow keys - advance the image
+    i - display image position i.e 3/10
+    delete - stop displaying the image and delete it. advance to the next image
+    :return:
+    '''
+    global SHOW_IMAGE_POSITION
+
+    e = pygame.event.poll()
+    while e.type != pygame.NOEVENT:
+        if e.type == pygame.QUIT:
+            end()
+
+        if e.type == pygame.KEYDOWN:
+            if e.key == pygame.K_q:
+                end()
+            elif e.key == pygame.K_d:
+                server.new_term_event.set()
+            elif e.key == pygame.K_LEFT:
+                return pygame.K_LEFT
+            elif e.key == pygame.K_RIGHT:
+                return pygame.K_RIGHT
+            elif e.key == pygame.K_i:
+                SHOW_IMAGE_POSITION = not SHOW_IMAGE_POSITION
+            elif e.key == pygame.K_DELETE:
+                return pygame.K_DELETE
+        e = pygame.event.poll()
+
+def idle_and_scan_input():
     start = datetime.datetime.now()
     next_tick = datetime.datetime.now()
     input_scan_rate = .1 # sec
 
     while (next_tick - start).seconds < vars['flip_frequency']:
-        check_for_exit()
+        input = scan_input()
+        if input:
+            return input
         time.sleep(input_scan_rate)
         next_tick = datetime.datetime.now()
 
@@ -476,32 +525,56 @@ def run():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     ImageDownloader(IMAGES, search_term_download, server).start()
 
+    IMAGES_LOCK.acquire()
+    images = list(IMAGES)
+    IMAGES_LOCK.release()
+
+    i = 0
+
     while True:
-
-        IMAGES_LOCK.acquire()
-        images = set(IMAGES)
-        IMAGES_LOCK.release()
-
-
         if len(images) < LOADING_PAGE_THRESHOLD:
             display_loading()
 
-        for image in images:
-            try:
-                display_image(image)
-            except IOError:
-                continue
-            idle()
+        image = images[i]
+        try:
+            display_image(image, i)
+        except IOError:
+            i = (i + 1) % len(images)
+            continue
 
-            #reload the images to display because 1) ImageCleaner cleaned out images
-            #or 2) The server added/removed extra images to display ("extra_images")
-            if REFRESH_EVENT.is_set():
-                REFRESH_EVENT.clear()
-                break
+        input = idle_and_scan_input()
+        if input == pygame.K_LEFT:
+            i = (i - 1) % len(images)
+        elif input == pygame.K_DELETE:
+            IMAGES_LOCK.acquire()
+            IMAGES.remove(image)
+            images = list(IMAGES)
+            i = (i - 1) % len(images)
+            IMAGES_LOCK.release()
+
+            try:
+                os.unlink(image)
+            except OSError as e:
+                main_logger.info(e)
+        elif input == pygame.K_RIGHT or input is None:
+            i = (i + 1) % len(images)
+
+        # reload the images to display because 1) ImageCleaner cleaned out images
+        # or 2) The server added/removed extra images to display ("extra_images")
+        # or 3) ImageDownloader finished downloading new images
+        if REFRESH_EVENT.is_set():
+            IMAGES_LOCK.acquire()
+            images = list(IMAGES)
+            i = 0
+            IMAGES_LOCK.release()
+            REFRESH_EVENT.clear()
+
+
+
 
 
 screen = display.set_mode(IMAGE_SIZE, pygame.FULLSCREEN)
-#screen = display.set_mode(IMAGE_SIZE)
+# screen = display.set_mode(IMAGE_SIZE)
 signal.signal(signal.SIGINT,end)
 run()
 
