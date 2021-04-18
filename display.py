@@ -69,11 +69,9 @@ RESULTS_PER_PAGE = vars['results_per_page'] # must be between 1-10
 LOADING_PAGE_THRESHOLD = RESULTS_PER_PAGE
 CHUNK_SIZE = 8192
 GOOGLE_API_URL = "https://www.googleapis.com/customsearch/v1?{}"
-SEARCH_ENGINE_ID = '007957652027458452999:nm6b9xle5se'
-USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.110 Safari/537.36'
-#with open("apikey") as apikey_file:
-#    API_KEY = apikey_file.readline()
-API_KEY = "AIzaSyAtLp1P49VQbGO33Lxie4Un-ZaLLEhvOhw"
+SEARCH_ENGINE_ID = vars['search_engine_id']
+USER_AGENT = vars['user_agent']
+API_KEY = vars['api_key']
 
 IMAGES_LOCK = threading.Lock()
 IMAGE_SIZES = [
@@ -418,12 +416,11 @@ def search_term_download():
 
 def check_for_exit():
     for e in pygame.event.get():
-        if e.type == pygame.QUIT:
-            end()
-        elif e.type == pygame.KEYDOWN:
+        if e.type == pygame.KEYDOWN:
             if e.key == pygame.K_q:
                 end()
-
+            elif e.key == pygame.K_d:
+                server.new_term_event.set()
 
 def display_loading():
     '''Loading screen that displays if less than 10 images are available'''
@@ -534,6 +531,11 @@ def run():
     while True:
         if len(images) < LOADING_PAGE_THRESHOLD:
             display_loading()
+
+            #refresh images with those newly downloaded
+            IMAGES_LOCK.acquire()
+            images = list(IMAGES)
+            IMAGES_LOCK.release()
 
         image = images[i]
         try:

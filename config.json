@@ -1,7 +1,10 @@
 {
  "image_download_interval": 36000,
  "flip_frequency": 5,
- "search_terms": [],
+ "search_terms": ["plants"],
  "extra_images": [],
- "results_per_page": 3
+ "results_per_page": 3,
+ "api_key": "AIzaSyAtLp1P49VQbGO33Lxie4Un-ZaLLEhvOhw",
+ "search_engine_id": "007957652027458452999:nm6b9xle5se",
+ "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.110 Safari/537.36"
 }
